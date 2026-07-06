@@ -15,50 +15,70 @@ from services.verify_service import (
     cancel_verify,
     show_home_menu
 )
+
 from app.engine.page_engine import PageEngine
+
 from admin.admin import admin_panel
 from admin.verify_admin import verify_admin_menu
 
 
 # -----------------------------
-# פקודת /start – דף הבית
+# פקודת /start
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await PageEngine.show_page(update, context, "HOME")
+
 
 # -----------------------------
 # פקודת /admin
 # -----------------------------
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await admin_panel(update, context)
-    
+
+
 # -----------------------------
-# לחיצות על כפתורים
+# כל הכפתורים
 # -----------------------------
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
+    # -----------------------------
     # התחלת אימות
+    # -----------------------------
     if data == "START_VERIFY":
         return await start_verify(update, context)
 
-       # ביטול אימות
+    # -----------------------------
+    # ביטול אימות
+    # -----------------------------
     if data == "CANCEL_VERIFY":
         return await cancel_verify(update, context)
 
-    # מערכת אימותים - מנהל
-    if data == "ADMIN_VERIFY":
+    # -----------------------------
+    # מערכת האימותים - מנהל
+    # -----------------------------
+    if data in (
+        "ADMIN_VERIFY",
+        "VERIFY_PENDING",
+        "VERIFY_APPROVED",
+        "VERIFY_REJECTED",
+        "VERIFY_BLOCKED",
+        "VERIFY_STATS",
+    ):
         return await verify_admin_menu(update, context)
 
+    # -----------------------------
     # מעבר בין דפים רגילים
+    # -----------------------------
     await PageEngine.show_page(update, context, data)
 
 
 # -----------------------------
-# כל המדיה – תמונות, סרטונים, טקסט
+# כל המדיה
 # -----------------------------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_verify(update, context)
@@ -68,26 +88,31 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # -----------------------------
 def main():
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # פקודת /start
+    # /start
     app.add_handler(CommandHandler("start", start))
-    
+
+    # /admin
     app.add_handler(CommandHandler("admin", admin))
 
-    # כפתורים
+    # כל הכפתורים
     app.add_handler(CallbackQueryHandler(button_click))
 
-    # כל סוגי ההודעות – כדי שהבוט יתקן טקסט במקום תמונה
-    app.add_handler(MessageHandler(
-        filters.PHOTO |
-        filters.VIDEO |
-        filters.VIDEO_NOTE |
-        filters.TEXT,  # חשוב מאוד!
-        media_handler
-    ))
+    # תמונות / סרטונים / טקסט
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.VIDEO_NOTE
+            | filters.TEXT,
+            media_handler,
+        )
+    )
 
     print("🤖 Bot is running...")
+
     app.run_polling()
 
 
