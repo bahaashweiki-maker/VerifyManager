@@ -71,3 +71,19 @@ def get_blocked_verifications():
     conn.close()
 
     return rows
+
+def get_verification_by_id(verification_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT *
+        FROM verifications
+        WHERE id = ?
+    """, (verification_id,))
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
