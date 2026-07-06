@@ -17,6 +17,7 @@ from services.verify_service import (
 )
 from app.engine.page_engine import PageEngine
 from admin.admin import admin_panel
+from admin.verify_admin import verify_admin_menu
 
 
 # -----------------------------
@@ -44,9 +45,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "START_VERIFY":
         return await start_verify(update, context)
 
-    # ביטול אימות
+       # ביטול אימות
     if data == "CANCEL_VERIFY":
         return await cancel_verify(update, context)
+
+    # מערכת אימותים - מנהל
+    if data == "ADMIN_VERIFY":
+        return await verify_admin_menu(update, context)
 
     # מעבר בין דפים רגילים
     await PageEngine.show_page(update, context, data)
