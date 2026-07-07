@@ -61,16 +61,18 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -----------------------------
     # מערכת האימותים - מנהל
     # -----------------------------
-    if data in (
+    if (
+    data in (
         "ADMIN_VERIFY",
         "VERIFY_PENDING",
         "VERIFY_APPROVED",
         "VERIFY_REJECTED",
         "VERIFY_BLOCKED",
         "VERIFY_STATS",
-    ):
-        return await verify_admin_menu(update, context)
-
+    )
+    or data.startswith("OPEN_VERIFY_")
+):
+     return await verify_admin_menu(update, context)
     # -----------------------------
     # מעבר בין דפים רגילים
     # -----------------------------

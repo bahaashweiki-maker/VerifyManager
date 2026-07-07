@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes
 
 from services.verify_admin_service import (
     get_pending_verifications,
+    get_verification_by_id,
 )
 
 
@@ -32,9 +33,9 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for verify in verifications:
 
-            verification_id = verify[0]
-            telegram_id = verify[1]
-            status = verify[6]
+            verification_id = verify["id"]
+            telegram_id = verify["telegram_id"]
+            status = verify["status"]
 
             text += (
                 f"🆔 אימות #{verification_id}\n"
@@ -62,6 +63,152 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
+        return
+
+    # ======================================
+    # פתיחת אימות בודד
+    # ======================================
+    if data.startswith("OPEN_VERIFY_"):
+
+        verification_id = int(data.split("_")[-1])
+        verify = get_verification_by_id(verification_id)
+
+        if not verify:
+            await query.edit_message_text("⚠️ האימות לא נמצא.")
+            return
+
+        text = (
+            f"🔍 <b>פרטי אימות #{verify['id']}</b>\n\n"
+            f"👤 Telegram ID: <code>{verify['telegram_id']}</code>\n"
+            f"🔗 רשת חברתית: {verify['social'] or '—'}\n"
+            f"🔑 קוד: {verify['code'] or '—'}\n"
+            f"📌 סטטוס: {verify['status']}\n"
+            f"🕐 נוצר: {verify['created_at']}\n"
+        )
+
+        vid = verify["id"]
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🪪 הצג תעודת זהות", callback_data=f"VIEW_ID_{vid}"),
+                InlineKeyboardButton("🤳 הצג סלפי",        callback_data=f"VIEW_SELFIE_{vid}"),
+                InlineKeyboardButton("🎥 הצג סרטון",       callback_data=f"VIEW_VIDEO_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("✅ אשר אימות",  callback_data=f"VERIFY_APPROVE_{vid}"),
+                InlineKeyboardButton("❌ דחה אימות",  callback_data=f"VERIFY_REJECT_{vid}"),
+                InlineKeyboardButton("🚫 חסום משתמש", callback_data=f"VERIFY_BLOCK_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("💬 שלח הודעה", callback_data=f"VERIFY_MESSAGE_{vid}"),
+                InlineKeyboardButton("🗑 מחק אימות",  callback_data=f"VERIFY_DELETE_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ חזרה לרשימת האימותים", callback_data="VERIFY_PENDING"),
+            ],
+        ])
+
+        await query.edit_message_text(
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+        return
+
+    # ======================================
+    # הצגת תעודת זהות
+    # ======================================
+    if data.startswith("VIEW_ID_"):
+
+        verification_id = int(data.split("_")[-1])
+        verify = get_verification_by_id(verification_id)
+
+        if not verify or not verify["id_photo"]:
+            await query.answer("⚠️ אין תמונת תעודת זהות.", show_alert=True)
+            return
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=verify["id_photo"],
+            caption="🪪 תמונת תעודת זהות"
+        )
+
+        return
+
+    # ======================================
+    # הצגת סלפי
+    # ======================================
+    if data.startswith("VIEW_SELFIE_"):
+
+        verification_id = int(data.split("_")[-1])
+        verify = get_verification_by_id(verification_id)
+
+        if not verify or not verify["selfie"]:
+            await query.answer("⚠️ אין תמונת סלפי.", show_alert=True)
+            return
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=verify["selfie"],
+            caption="🤳 סלפי"
+        )
+
+        return
+
+    # ======================================
+    # הצגת סרטון
+    # ======================================
+    if data.startswith("VIEW_VIDEO_"):
+
+        verification_id = int(data.split("_")[-1])
+        verify = get_verification_by_id(verification_id)
+
+        if not verify or not verify["video"]:
+            await query.answer("⚠️ אין סרטון.", show_alert=True)
+            return
+
+        await context.bot.send_video(
+            chat_id=query.message.chat_id,
+            video=verify["video"],
+            caption="🎥 סרטון"
+        )
+
+        return
+
+    # ======================================
+    # אשר אימות (placeholder)
+    # ======================================
+    if data.startswith("VERIFY_APPROVE_"):
+        await query.answer("✅ בקרוב.", show_alert=True)
+        return
+
+    # ======================================
+    # דחה אימות (placeholder)
+    # ======================================
+    if data.startswith("VERIFY_REJECT_"):
+        await query.answer("❌ בקרוב.", show_alert=True)
+        return
+
+    # ======================================
+    # חסום משתמש (placeholder)
+    # ======================================
+    if data.startswith("VERIFY_BLOCK_"):
+        await query.answer("🚫 בקרוב.", show_alert=True)
+        return
+
+    # ======================================
+    # שלח הודעה (placeholder)
+    # ======================================
+    if data.startswith("VERIFY_MESSAGE_"):
+        await query.answer("💬 בקרוב.", show_alert=True)
+        return
+
+    # ======================================
+    # מחק אימות (placeholder)
+    # ======================================
+    if data.startswith("VERIFY_DELETE_"):
+        await query.answer("🗑 בקרוב.", show_alert=True)
         return
 
     # ======================================
