@@ -74,6 +74,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verification_id = int(data.split("_")[-1])
         print("VERIFICATION ID =", verification_id)
         verify = get_verification_by_id(verification_id)
+        print(verify.keys())
         print("VERIFY =", verify)
         
         print("VERIFY ID =", verify["id"])
@@ -89,6 +90,9 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     
     f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
+    f"👤 <b>שם מלא:</b> {verify['full_name'] or '-'}\n"
+    f"🔗 <b>Username:</b> @{verify['username'] or '-'}\n\n"
+    f"🆔 <b>מספר אימות:</b> <code>{verify['id']}</code>\n\n"
 
     f"📅 <b>תאריך:</b> {verify['created_at'][:10]}\n"
     f"🕒 <b>שעה:</b> {verify['created_at'][11:19]}\n\n"

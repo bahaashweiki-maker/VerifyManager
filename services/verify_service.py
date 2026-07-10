@@ -233,6 +233,8 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
     user_id = user.id
 
     # קודם שומרים את האימות במסד
+    print("FULL NAME =", user.full_name)
+    print("USERNAME =", user.username)
     verification_id = create_verification(
         telegram_id=user_id,
         
