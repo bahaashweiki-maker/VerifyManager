@@ -69,13 +69,20 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # פתיחת אימות בודד
     # ======================================
     if data.startswith("OPEN_VERIFY_"):
-
+        
+        print("CALLBACK DATA =", data)
         verification_id = int(data.split("_")[-1])
+        print("VERIFICATION ID =", verification_id)
         verify = get_verification_by_id(verification_id)
+        print("VERIFY =", verify)
+        
+        print("VERIFY ID =", verify["id"])
+        print("VERIFY STATUS =", verify["status"])
 
         if not verify:
             await query.edit_message_text("⚠️ האימות לא נמצא.")
             return
+        print("REACHED TEXT")
 
         text = (
             f"🔍 <b>פרטי אימות #{verify['id']}</b>\n\n"
@@ -89,11 +96,14 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vid = verify["id"]
 
         keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🪪 הצג תעודת זהות", callback_data=f"VIEW_ID_{vid}"),
-                InlineKeyboardButton("🤳 הצג סלפי",        callback_data=f"VIEW_SELFIE_{vid}"),
-                InlineKeyboardButton("🎥 הצג סרטון",       callback_data=f"VIEW_VIDEO_{vid}"),
-            ],
+                [
+                    InlineKeyboardButton("🪪 תעודת זהות", callback_data=f"VIEW_ID_{vid}"),
+                    InlineKeyboardButton("🤳 סלפי", callback_data=f"VIEW_SELFIE_{vid}"),
+                ],
+                [
+                    InlineKeyboardButton("📱 צילום מסך", callback_data=f"VIEW_SOCIAL_{vid}"),
+                    InlineKeyboardButton("🎥 סרטון", callback_data=f"VIEW_VIDEO_{vid}"),
+                ],
             [
                 InlineKeyboardButton("✅ אשר אימות",  callback_data=f"VERIFY_APPROVE_{vid}"),
                 InlineKeyboardButton("❌ דחה אימות",  callback_data=f"VERIFY_REJECT_{vid}"),
@@ -132,6 +142,25 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=query.message.chat_id,
             photo=verify["id_photo"],
             caption="🪪 תמונת תעודת זהות"
+        )
+
+        return
+    # ======================================
+    # הצגת צילום מסך רשת חברתית
+    # ======================================
+    if data.startswith("VIEW_SOCIAL_"):
+
+        verification_id = int(data.split("_")[-1])
+        verify = get_verification_by_id(verification_id)
+
+        if not verify or not verify.get("social"):
+            await query.answer("⚠️ אין צילום מסך.", show_alert=True)
+            return
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=verify["social"],
+            caption="📱 צילום מסך רשת חברתית"
         )
 
         return
@@ -175,7 +204,8 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         return
-
+    
+    
     # ======================================
     # אשר אימות (placeholder)
     # ======================================

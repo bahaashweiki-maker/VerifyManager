@@ -4,8 +4,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.engine.page_engine import PageEngine
 import random
+from database.database import create_verification
 
-ADMIN_CHAT_ID = 123456789   # לשנות למזהה המנהל
+ADMIN_CHAT_ID = 1751674910   # לשנות למזהה המנהל
 
 
 # -----------------------------
@@ -230,15 +231,27 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
     user_id = user.id
 
     text = (
-        "🔔 *אימות חדש התקבל*\n\n"
         f"👤 שם: {user.full_name}\n"
         f"🆔 ID: `{user_id}`\n"
         f"📄 מצורפות כל המדיות."
     )
 
-    await context.bot.send_message(ADMIN_CHAT_ID, text, parse_mode="Markdown")
+    await context.bot.send_message(
+    ADMIN_CHAT_ID,
+    text,
+    parse_mode=None
+)
 
     await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["id_photo"], caption="🪪 תעודה")
     await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["social"], caption="📸 צילום מסך")
     await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["selfie"], caption="🤳 סלפי")
     await context.bot.send_video(ADMIN_CHAT_ID, state["media"]["video"], caption="🎥 סרטון אימות")
+    
+    create_verification(
+    telegram_id=user_id,
+    id_photo=state["media"]["id_photo"],
+    selfie=state["media"]["selfie"],
+    social=state["media"]["social"],
+    video=state["media"]["video"],
+    code=str(state["verify_code"])
+)
