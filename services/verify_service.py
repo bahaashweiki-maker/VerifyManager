@@ -4,6 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.engine.page_engine import PageEngine
 import random
+from datetime import datetime
 from database.database import create_verification
 
 ADMIN_CHAT_ID = 1751674910   # לשנות למזהה המנהל
@@ -79,7 +80,8 @@ async def start_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "verify_code": verify_code,
         "last_bot_msg": None
     }
-
+      
+     
     text = (
         "💠 *לקוח יקר,*\n\n"
         "התחלנו את תהליך האימות שלך.\n\n"
@@ -233,6 +235,9 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
     # קודם שומרים את האימות במסד
     verification_id = create_verification(
         telegram_id=user_id,
+        
+        full_name=user.full_name,
+        username=user.username,
         id_photo=state["media"]["id_photo"],
         selfie=state["media"]["selfie"],
         social=state["media"]["social"],
@@ -248,13 +253,19 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
             )
         ]
     ])
-
+    
+    now = datetime.now()
     text = (
-        "🔔 התקבל אימות חדש\n\n"
-        f"👤 שם: {user.full_name}\n"
-        f"🆔 Telegram ID: {user_id}\n\n"
-        "לחץ על הכפתור כדי לפתוח את האימות."
-    )
+    "🚨 התקבל אימות חדש\n\n"
+    f"🪪 מספר אימות: #{verification_id}\n\n"
+    f"👤 שם מלא: {user.full_name}\n"
+    f"🔗 Username: @{user.username if user.username else 'אין'}\n"
+    f"🆔 Telegram ID: {user_id}\n\n"
+    f"📅 תאריך: {now.strftime('%d/%m/%Y')}\n"
+    f"🕒 שעה: {now.strftime('%H:%M:%S')}\n\n"
+    "📌 סטטוס: ממתין לאישור\n\n"
+    "👇 לחץ על הכפתור לפתיחת האימות."
+)
 
     await context.bot.send_message(
         chat_id=ADMIN_CHAT_ID,

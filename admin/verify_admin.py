@@ -85,13 +85,17 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print("REACHED TEXT")
 
         text = (
-            f"🔍 <b>פרטי אימות #{verify['id']}</b>\n\n"
-            f"👤 Telegram ID: <code>{verify['telegram_id']}</code>\n"
-            f"🔗 רשת חברתית: {verify['social'] or '—'}\n"
-            f"🔑 קוד: {verify['code'] or '—'}\n"
-            f"📌 סטטוס: {verify['status']}\n"
-            f"🕐 נוצר: {verify['created_at']}\n"
-        )
+    f"🔎 <b>פרטי אימות #{verify['id']}</b>\n\n"
+
+    
+    f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
+
+    f"📅 <b>תאריך:</b> {verify['created_at'][:10]}\n"
+    f"🕒 <b>שעה:</b> {verify['created_at'][11:19]}\n\n"
+
+    f"🔑 <b>קוד אימות:</b> {verify['code'] or '-'}\n"
+    f"📌 <b>סטטוס:</b> {verify['status']}"
+)
 
         vid = verify["id"]
 

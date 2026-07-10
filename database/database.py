@@ -134,6 +134,8 @@ def create_tables() -> bool:
                 CREATE TABLE IF NOT EXISTS verifications (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER NOT NULL,
+                    full_name   TEXT,
+                    username    TEXT,
                     id_photo    TEXT,
                     selfie      TEXT,
                     social      TEXT,
@@ -203,6 +205,9 @@ def run_migrations() -> bool:
 
 def create_verification(
     telegram_id: int,
+    
+    full_name: Optional[str] = None,
+    username: Optional[str] = None,
     id_photo: Optional[str] = None,
     selfie: Optional[str] = None,
     social: Optional[str] = None,
@@ -228,10 +233,10 @@ def create_verification(
             cur = conn.execute(
                 """
                 INSERT INTO verifications
-                    (telegram_id, id_photo, selfie, social, video, code)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (telegram_id, full_name, username, id_photo, selfie, social, video, code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (telegram_id, id_photo, selfie, social, video, code),
+                (telegram_id, full_name, username, id_photo, selfie, social, video, code),
             )
             conn.commit()
             new_id: int = cur.lastrowid  # type: ignore[assignment]
