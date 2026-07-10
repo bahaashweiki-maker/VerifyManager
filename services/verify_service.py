@@ -230,28 +230,34 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
     user = update.message.from_user
     user_id = user.id
 
+    # קודם שומרים את האימות במסד
+    verification_id = create_verification(
+        telegram_id=user_id,
+        id_photo=state["media"]["id_photo"],
+        selfie=state["media"]["selfie"],
+        social=state["media"]["social"],
+        video=state["media"]["video"],
+        code=str(state["verify_code"])
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔍 פתח אימות",
+                callback_data=f"OPEN_VERIFY_{verification_id}"
+            )
+        ]
+    ])
+
     text = (
+        "🔔 התקבל אימות חדש\n\n"
         f"👤 שם: {user.full_name}\n"
-        f"🆔 ID: `{user_id}`\n"
-        f"📄 מצורפות כל המדיות."
+        f"🆔 Telegram ID: {user_id}\n\n"
+        "לחץ על הכפתור כדי לפתוח את האימות."
     )
 
     await context.bot.send_message(
-    ADMIN_CHAT_ID,
-    text,
-    parse_mode=None
-)
-
-    await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["id_photo"], caption="🪪 תעודה")
-    await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["social"], caption="📸 צילום מסך")
-    await context.bot.send_photo(ADMIN_CHAT_ID, state["media"]["selfie"], caption="🤳 סלפי")
-    await context.bot.send_video(ADMIN_CHAT_ID, state["media"]["video"], caption="🎥 סרטון אימות")
-    
-    create_verification(
-    telegram_id=user_id,
-    id_photo=state["media"]["id_photo"],
-    selfie=state["media"]["selfie"],
-    social=state["media"]["social"],
-    video=state["media"]["video"],
-    code=str(state["verify_code"])
-)
+        chat_id=ADMIN_CHAT_ID,
+        text=text,
+        reply_markup=keyboard
+    )
