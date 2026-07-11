@@ -4,7 +4,9 @@ from telegram.ext import ContextTypes
 from services.verify_admin_service import (
     get_pending_verifications,
     get_verification_by_id,
+    get_verification_index,
 )
+
 
 
 async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -18,8 +20,10 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # אימותים ממתינים
     # ======================================
     if data == "VERIFY_PENDING":
-
+        
+    
         verifications = get_pending_verifications()
+        
 
         if not verifications:
             await query.edit_message_text(
@@ -27,44 +31,15 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        keyboard = []
+        first_verify = verifications[0]
+        
+        data = f"OPEN_VERIFY_{first_verify['id']}"
 
-        text = "⏳ <b>אימותים ממתינים</b>\n\n"
-
-        for verify in verifications:
-
-            verification_id = verify["id"]
-            telegram_id = verify["telegram_id"]
-            status = verify["status"]
-
-            text += (
-                f"🆔 אימות #{verification_id}\n"
-                f"👤 {telegram_id}\n"
-                f"📌 {status}\n\n"
-            )
-
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"🔍 פתח אימות #{verification_id}",
-                    callback_data=f"OPEN_VERIFY_{verification_id}"
-                )
-            ])
-
-        keyboard.append([
-            InlineKeyboardButton(
-                "⬅️ חזרה",
-                callback_data="ADMIN_VERIFY"
-            )
-        ])
-
-        await query.edit_message_text(
-            text=text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-
-        return
-
+       
+        # ממשיך ישר לפתיחת האימות הראשון
+        verify = first_verify
+        verification_id = verify["id"]
+        print("AUTO OPEN =", verification_id) 
     # ======================================
     # פתיחת אימות בודד
     # ======================================
@@ -74,6 +49,15 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verification_id = int(data.split("_")[-1])
         print("VERIFICATION ID =", verification_id)
         verify = get_verification_by_id(verification_id)
+        
+        
+        verifications = get_pending_verifications()
+        current_index = get_verification_index(verifications, verification_id)
+        total = len(verifications)
+
+        print(current_index, "/", total)
+                
+    
         print(verify.keys())
         print("VERIFY =", verify)
         
@@ -86,8 +70,8 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print("REACHED TEXT")
 
         text = (
+    f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n"
     f"🔎 <b>פרטי אימות #{verify['id']}</b>\n\n"
-
     
     f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
     f"👤 <b>שם מלא:</b> {verify['full_name'] or '-'}\n"
@@ -120,6 +104,17 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("💬 שלח הודעה", callback_data=f"VERIFY_MESSAGE_{vid}"),
                 InlineKeyboardButton("🗑 מחק אימות",  callback_data=f"VERIFY_DELETE_{vid}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ הקודם",
+                    callback_data=f"OPEN_VERIFY_{verifications[current_index - 1]['id']}"
+                ) if current_index > 0 else InlineKeyboardButton(" ", callback_data="IGNORE"),
+
+                InlineKeyboardButton(
+                    "➡️ הבא",
+                    callback_data=f"OPEN_VERIFY_{verifications[current_index + 1]['id']}"
+                ) if current_index < total - 1 else InlineKeyboardButton(" ", callback_data="IGNORE"),
             ],
             [
                 InlineKeyboardButton("⬅️ חזרה לרשימת האימותים", callback_data="VERIFY_PENDING"),
