@@ -71,7 +71,6 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = (
     f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n"
-    f"🔎 <b>פרטי אימות #{verify['id']}</b>\n\n"
     
     f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
     f"👤 <b>שם מלא:</b> {verify['full_name'] or '-'}\n"
