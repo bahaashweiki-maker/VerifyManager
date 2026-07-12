@@ -61,6 +61,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if (
         data in (
             "ADMIN_VERIFY",
+            "ADMIN_HOME",
             "VERIFY_PENDING",
             "VERIFY_APPROVED",
             "VERIFY_REJECTED",

@@ -322,7 +322,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         return
-        # ======================================
+    # ======================================
     # סטטיסטיקות אימותים
     # ======================================
     if data == "VERIFY_STATS":
@@ -374,6 +374,13 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
+        return
+    # ======================================
+    # חזרה למערכת הניהול
+    # ======================================
+    if data == "ADMIN_HOME":
+        from admin.admin import admin_panel
+        await admin_panel(update, context)
         return
     # ======================================
     # תפריט ראשי
