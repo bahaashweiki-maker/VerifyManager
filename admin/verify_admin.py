@@ -47,7 +47,23 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ממשיך ישר לפתיחת האימות הראשון
         verify = first_verify
         verification_id = verify["id"]
-        print("AUTO OPEN =", verification_id) 
+        
+    # ======================================
+    # משתמשים מאומתים
+    # ======================================
+    if data == "VERIFY_APPROVED":
+
+        verifications = get_approved_verifications()
+
+        if not verifications:
+            await query.edit_message_text(
+                "📭 אין משתמשים מאומתים."
+            )
+            return
+
+        first_verify = verifications[0]
+
+        data = f"OPEN_VERIFY_{first_verify['id']}" 
     # ======================================
     # פתיחת אימות בודד
     # ======================================
@@ -59,10 +75,24 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verify = get_verification_by_id(verification_id)
         
         
-        verifications = get_pending_verifications()
+        if verify["status"] == "pending":
+           verifications = get_pending_verifications()
+
+        elif verify["status"] == "approved":
+            verifications = get_approved_verifications()
+
+        elif verify["status"] == "rejected":
+            verifications = get_rejected_verifications()
+
+        elif verify["status"] == "blocked":
+            verifications = get_blocked_verifications()
+
+        else:
+            verifications = []
+
         current_index = get_verification_index(verifications, verification_id)
         total = len(verifications)
-
+        
         print(current_index, "/", total)
                 
     
