@@ -104,6 +104,42 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = user.id
     chat_id = update.message.chat_id
+    
+    # =====================================
+    # הודעה מהמנהל למשתמש
+    # =====================================
+    if (
+        user_id == ADMIN_CHAT_ID
+        and "message_verification_id" in context.user_data
+        and update.message.text
+    ):
+
+        verification_id = context.user_data.pop("message_verification_id")
+
+        from services.verify_admin_service import get_verification_by_id
+
+        verify = get_verification_by_id(verification_id)
+
+        if verify:
+
+            await context.bot.send_message(
+                chat_id=verify["telegram_id"],
+                text=(
+                    "📩 הודעה מהנהלת VerifyManager\n\n"
+                    f"{update.message.text}"
+                )
+            )
+
+            await update.message.reply_text(
+                "✅ ההודעה נשלחה למשתמש."
+            )
+
+        else:
+            await update.message.reply_text(
+                "❌ האימות לא נמצא."
+            )
+
+        return
 
     state = context.user_data.get(user_id)
     if not state:

@@ -3,7 +3,15 @@ from telegram.ext import ContextTypes
 
 from services.verify_admin_service import (
     get_pending_verifications,
+    get_approved_verifications,
+    get_rejected_verifications,
+    get_blocked_verifications,
     get_verification_by_id,
+    approve_verification,
+    reject_verification,
+    block_verification,
+    delete_verification,
+    get_verification_stats,
     get_verification_index,
 )
 
@@ -129,42 +137,128 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    
-    # ======================================
-    # אשר אימות (placeholder)
+        # ======================================
+    # אשר אימות
     # ======================================
     if data.startswith("VERIFY_APPROVE_"):
-        await query.answer("✅ בקרוב.", show_alert=True)
+
+        verification_id = int(data.split("_")[-1])
+
+        approve_verification(verification_id)
+
+        verify = get_verification_by_id(verification_id)
+
+        await context.bot.send_message(
+            chat_id=verify["telegram_id"],
+            text=(
+                "🎉 האימות שלך אושר בהצלחה!\n\n"
+                "כעת החשבון שלך מאומת וניתן להשתמש בכל שירותי המערכת.\n\n"
+                "תודה שבחרת בנו 🦋"
+            )
+        )
+
+        await query.answer(
+            "✅ האימות אושר בהצלחה.",
+            show_alert=True
+        )
+
         return
 
-    # ======================================
-    # דחה אימות (placeholder)
+        # ======================================
+        # דחה אימות (placeholder)
+        # ======================================
+        if data.startswith("VERIFY_REJECT_"):
+            await query.answer("❌ בקרוב.", show_alert=True)
+            return
+            
+            # ======================================
+    # דחה אימות
     # ======================================
     if data.startswith("VERIFY_REJECT_"):
-        await query.answer("❌ בקרוב.", show_alert=True)
-        return
 
-    # ======================================
-    # חסום משתמש (placeholder)
-    # ======================================
+        verification_id = int(data.split("_")[-1])
+
+        reject_verification(verification_id)
+
+        verify = get_verification_by_id(verification_id)
+
+        await context.bot.send_message(
+            chat_id=verify["telegram_id"],
+            text=(
+                "❌ האימות שלך נדחה.\n\n"
+                "ניתן להגיש אימות חדש עם מסמכים ברורים יותר.\n\n"
+                "תודה שבחרת בנו 🦋"
+            )
+        )
+
+        await query.answer(
+            "❌ האימות נדחה.",
+            show_alert=True
+        )
+
+        return
+           
+        # ======================================
+        # חסום משתמש
+        # ======================================
     if data.startswith("VERIFY_BLOCK_"):
-        await query.answer("🚫 בקרוב.", show_alert=True)
-        return
 
+            verification_id = int(data.split("_")[-1])
+
+            block_verification(verification_id)
+
+            verify = get_verification_by_id(verification_id)
+
+            await context.bot.send_message(
+                chat_id=verify["telegram_id"],
+                text=(
+                    "🚫 החשבון שלך נחסם.\n\n"
+                    "לא ניתן להשתמש במערכת בשלב זה.\n\n"
+                    "אם לדעתך מדובר בטעות, ניתן ליצור קשר עם הנהלת המערכת.\n\n"
+                    "תודה שבחרת בנו 🦋"
+                )
+            )
+
+            await query.answer(
+                "🚫 המשתמש נחסם.",
+                show_alert=True
+            )
+
+            return
+            
     # ======================================
-    # שלח הודעה (placeholder)
+    # שלח הודעה
     # ======================================
     if data.startswith("VERIFY_MESSAGE_"):
-        await query.answer("💬 בקרוב.", show_alert=True)
+
+        verification_id = int(data.split("_")[-1])
+
+        context.user_data["message_verification_id"] = verification_id
+
+        await query.message.reply_text(
+            "✍️ כתוב עכשיו את ההודעה שברצונך לשלוח למשתמש."
+        )
+
         return
 
     # ======================================
-    # מחק אימות (placeholder)
+    # מחק אימות
     # ======================================
     if data.startswith("VERIFY_DELETE_"):
-        await query.answer("🗑 בקרוב.", show_alert=True)
-        return
 
+        verification_id = int(data.split("_")[-1])
+
+        verify = get_verification_by_id(verification_id)
+
+        delete_verification(verification_id)
+        
+        
+        await query.answer(
+            "🗑 האימות נמחק.",
+            show_alert=True
+        )
+
+        return
     # ======================================
     # תפריט ראשי
     # ======================================
