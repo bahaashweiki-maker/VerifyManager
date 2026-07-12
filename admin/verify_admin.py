@@ -63,6 +63,39 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         first_verify = verifications[0]
 
+        data = f"OPEN_VERIFY_{first_verify['id']}"
+    # ======================================
+    # אימותים שנדחו
+    # ======================================
+    if data == "VERIFY_REJECTED":
+
+        verifications = get_rejected_verifications()
+
+        if not verifications:
+            await query.edit_message_text(
+                "📭 אין אימותים שנדחו."
+            )
+            return
+
+        first_verify = verifications[0]
+
+        data = f"OPEN_VERIFY_{first_verify['id']}"
+        
+            # ======================================
+    # משתמשים חסומים
+    # ======================================
+    if data == "VERIFY_BLOCKED":
+
+        verifications = get_blocked_verifications()
+
+        if not verifications:
+            await query.edit_message_text(
+                "📭 אין משתמשים חסומים."
+            )
+            return
+
+        first_verify = verifications[0]
+
         data = f"OPEN_VERIFY_{first_verify['id']}" 
     # ======================================
     # פתיחת אימות בודד
