@@ -322,6 +322,59 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         return
+        # ======================================
+    # סטטיסטיקות אימותים
+    # ======================================
+    if data == "VERIFY_STATS":
+
+        stats = get_verification_stats()
+
+        total = 0
+        pending = 0
+        approved = 0
+        rejected = 0
+        blocked = 0
+
+        for row in stats:
+            status = row["status"]
+            count = row["total"]
+
+            total += count
+
+            if status == "pending":
+                pending = count
+            elif status == "approved":
+                approved = count
+            elif status == "rejected":
+                rejected = count
+            elif status == "blocked":
+                blocked = count
+
+        text = (
+            "📊 <b>סטטיסטיקת אימותים</b>\n\n"
+            f"👥 סך הכול אימותים: <b>{total}</b>\n\n"
+            f"⏳ ממתינים: <b>{pending}</b>\n"
+            f"✅ מאומתים: <b>{approved}</b>\n"
+            f"❌ נדחו: <b>{rejected}</b>\n"
+            f"🚫 חסומים: <b>{blocked}</b>"
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⬅️ חזרה למערכת ניהול האימותים",
+                    callback_data="ADMIN_VERIFY"
+                )
+            ]
+        ])
+
+        await query.edit_message_text(
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+        return
     # ======================================
     # תפריט ראשי
     # ======================================
