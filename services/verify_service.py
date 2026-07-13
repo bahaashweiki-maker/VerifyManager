@@ -4,6 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.engine.page_engine import PageEngine
 import random
+import asyncio
 from datetime import datetime
 from database.database import create_verification
 
@@ -104,6 +105,28 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = user.id
     chat_id = update.message.chat_id
+    
+    # ניקוי הודעות מחוץ לתהליך האימות
+    state = context.user_data.get(user_id)
+
+    if not state:
+        try:
+            await context.bot.delete_message(chat_id, update.message.message_id)
+        except:
+            pass
+
+        warning = await update.message.reply_text(
+            "⚠️ הבוט פועל באמצעות הכפתורים בלבד."
+        )
+
+        await asyncio.sleep(2)
+
+        try:
+            await context.bot.delete_message(chat_id, warning.message_id)
+        except:
+            pass
+
+        return
     
     # =====================================
     # הודעה מהמנהל למשתמש
