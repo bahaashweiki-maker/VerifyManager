@@ -23,15 +23,14 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+    print("CALLBACK:", data)
 
     # ======================================
-    # אימותים ממתינים
+    # אימותים ממתינים — הצגת רשימה
     # ======================================
     if data == "VERIFY_PENDING":
-        
-    
+
         verifications = get_pending_verifications()
-        
 
         if not verifications:
             await query.edit_message_text(
@@ -39,17 +38,27 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        first_verify = verifications[0]
-        
-        data = f"OPEN_VERIFY_{first_verify['id']}"
+        # [תיקון ניווט] שמירת מקור הניווט כדי שכפתור "חזרה" יחזיר לרשימה הנכונה
+        context.user_data["verify_source"] = "VERIFY_PENDING"
 
-       
-        # ממשיך ישר לפתיחת האימות הראשון
-        verify = first_verify
-        verification_id = verify["id"]
-        
+        buttons = []
+        for v in verifications:
+            label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
+
+        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await query.edit_message_text(
+            text=f"⏳ <b>אימותים ממתינים</b> ({len(verifications)})\n\nבחר אימות לצפייה:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+
     # ======================================
-    # משתמשים מאומתים
+    # משתמשים מאומתים — הצגת רשימה
     # ======================================
     if data == "VERIFY_APPROVED":
 
@@ -61,11 +70,27 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        first_verify = verifications[0]
+        # [תיקון ניווט] שמירת מקור הניווט כדי שכפתור "חזרה" יחזיר לרשימה הנכונה
+        context.user_data["verify_source"] = "VERIFY_APPROVED"
 
-        data = f"OPEN_VERIFY_{first_verify['id']}"
+        buttons = []
+        for v in verifications:
+            label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
+
+        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await query.edit_message_text(
+            text=f"✅ <b>משתמשים מאומתים</b> ({len(verifications)})\n\nבחר אימות לצפייה:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+
     # ======================================
-    # אימותים שנדחו
+    # אימותים שנדחו — הצגת רשימה
     # ======================================
     if data == "VERIFY_REJECTED":
 
@@ -77,12 +102,27 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        first_verify = verifications[0]
+        # [תיקון ניווט] שמירת מקור הניווט כדי שכפתור "חזרה" יחזיר לרשימה הנכונה
+        context.user_data["verify_source"] = "VERIFY_REJECTED"
 
-        data = f"OPEN_VERIFY_{first_verify['id']}"
-        
-            # ======================================
-    # משתמשים חסומים
+        buttons = []
+        for v in verifications:
+            label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
+
+        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await query.edit_message_text(
+            text=f"❌ <b>אימותים שנדחו</b> ({len(verifications)})\n\nבחר אימות לצפייה:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+
+    # ======================================
+    # משתמשים חסומים — הצגת רשימה
     # ======================================
     if data == "VERIFY_BLOCKED":
 
@@ -94,9 +134,25 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        first_verify = verifications[0]
+        # [תיקון ניווט] שמירת מקור הניווט כדי שכפתור "חזרה" יחזיר לרשימה הנכונה
+        context.user_data["verify_source"] = "VERIFY_BLOCKED"
 
-        data = f"OPEN_VERIFY_{first_verify['id']}" 
+        buttons = []
+        for v in verifications:
+            label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
+
+        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await query.edit_message_text(
+            text=f"🚫 <b>משתמשים חסומים</b> ({len(verifications)})\n\nבחר אימות לצפייה:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+
     # ======================================
     # פתיחת אימות בודד
     # ======================================
@@ -158,6 +214,11 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         vid = verify["id"]
 
+        # [תיקון ניווט] קריאת מקור הניווט מ-context.user_data
+        # נשמר בעת לחיצה על VERIFY_PENDING / VERIFY_APPROVED / VERIFY_REJECTED / VERIFY_BLOCKED
+        # כך כפתור "חזרה" תמיד חוזר לרשימה הנכונה, ולא תמיד ל-VERIFY_PENDING
+        back_target = context.user_data.get("verify_source", "VERIFY_PENDING")
+
         keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🪪 תעודת זהות", callback_data=f"VIEW_ID_{vid}"),
@@ -188,7 +249,8 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ) if current_index < total - 1 else InlineKeyboardButton(" ", callback_data="IGNORE"),
             ],
             [
-                InlineKeyboardButton("⬅️ חזרה לרשימת האימותים", callback_data="VERIFY_PENDING"),
+                # [תיקון ניווט] back_target = הרשימה הנכונה לפי מקור הניווט השמור
+                InlineKeyboardButton("⬅️ חזרה לרשימת האימותים", callback_data=back_target),
             ],
         ])
 
