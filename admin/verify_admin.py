@@ -23,8 +23,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
-    print("CALLBACK:", data)
-
+   
     # ======================================
     # אימותים ממתינים — הצגת רשימה
     # ======================================
@@ -158,9 +157,8 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ======================================
     if data.startswith("OPEN_VERIFY_"):
         
-        print("CALLBACK DATA =", data)
+        
         verification_id = int(data.split("_")[-1])
-        print("VERIFICATION ID =", verification_id)
         verify = get_verification_by_id(verification_id)
         
         
@@ -182,19 +180,9 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_index = get_verification_index(verifications, verification_id)
         total = len(verifications)
         
-        print(current_index, "/", total)
-                
-    
-        print(verify.keys())
-        print("VERIFY =", verify)
-        
-        print("VERIFY ID =", verify["id"])
-        print("VERIFY STATUS =", verify["status"])
-
         if not verify:
             await query.edit_message_text("⚠️ האימות לא נמצא.")
             return
-        print("REACHED TEXT")
 
         text = (
     f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n"
