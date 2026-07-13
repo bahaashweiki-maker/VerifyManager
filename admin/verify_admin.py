@@ -153,6 +153,101 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ======================================
+    # חזרה מצפיית מדיה — מחיקת הודעת המדיה וחזרה למסך האימות
+    # ======================================
+    if data.startswith("MEDIA_BACK_"):
+
+        verification_id = int(data.split("_")[-1])
+
+        # מחיקת הודעת המדיה (התמונה / הסרטון) — הכרחי
+        await query.message.delete()
+
+        # שליפת message_id של הודעת פרטי האימות המקורית, ייחודי לפי אימות
+        detail_msg_id = context.user_data.get(f"verify_detail_msg_id_{verification_id}")
+
+        if not detail_msg_id:
+            return
+
+        verify = get_verification_by_id(verification_id)
+
+        if not verify:
+            return
+
+        if verify["status"] == "pending":
+            verifications = get_pending_verifications()
+        elif verify["status"] == "approved":
+            verifications = get_approved_verifications()
+        elif verify["status"] == "rejected":
+            verifications = get_rejected_verifications()
+        elif verify["status"] == "blocked":
+            verifications = get_blocked_verifications()
+        else:
+            verifications = []
+
+        current_index = get_verification_index(verifications, verification_id)
+        total = len(verifications)
+
+        text = (
+            f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n"
+            f"🔎 <b>פרטי אימות #{verify['id']}</b>\n\n"
+            f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
+            f"👤 <b>שם מלא:</b> {verify['full_name'] or '-'}\n"
+            f"🔗 <b>Username:</b> @{verify['username'] or '-'}\n\n"
+            f"🆔 <b>מספר אימות:</b> <code>{verify['id']}</code>\n\n"
+            f"📅 <b>תאריך:</b> {verify['created_at'][:10]}\n"
+            f"🕒 <b>שעה:</b> {verify['created_at'][11:19]}\n\n"
+            f"🔑 <b>קוד אימות:</b> {verify['code'] or '-'}\n"
+            f"📌 <b>סטטוס:</b> {verify['status']}"
+        )
+
+        vid = verify["id"]
+        back_target = context.user_data.get("verify_source", "VERIFY_PENDING")
+
+        detail_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🪪 תעודת זהות", callback_data=f"VIEW_ID_{vid}"),
+                InlineKeyboardButton("🤳 סלפי", callback_data=f"VIEW_SELFIE_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("📱 צילום מסך", callback_data=f"VIEW_SOCIAL_{vid}"),
+                InlineKeyboardButton("🎥 סרטון", callback_data=f"VIEW_VIDEO_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("✅ אשר אימות",  callback_data=f"VERIFY_APPROVE_{vid}"),
+                InlineKeyboardButton("❌ דחה אימות",  callback_data=f"VERIFY_REJECT_{vid}"),
+                InlineKeyboardButton("🚫 חסום משתמש", callback_data=f"VERIFY_BLOCK_{vid}"),
+            ],
+            [
+                InlineKeyboardButton("💬 שלח הודעה", callback_data=f"VERIFY_MESSAGE_{vid}"),
+                InlineKeyboardButton("🗑 מחק אימות",  callback_data=f"VERIFY_DELETE_{vid}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ הקודם",
+                    callback_data=f"OPEN_VERIFY_{verifications[current_index - 1]['id']}"
+                ) if current_index > 0 else InlineKeyboardButton(" ", callback_data="IGNORE"),
+
+                InlineKeyboardButton(
+                    "➡️ הבא",
+                    callback_data=f"OPEN_VERIFY_{verifications[current_index + 1]['id']}"
+                ) if current_index < total - 1 else InlineKeyboardButton(" ", callback_data="IGNORE"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ חזרה לרשימת האימותים", callback_data=back_target),
+            ],
+        ])
+
+        await context.bot.edit_message_text(
+            chat_id=query.message.chat_id,
+            message_id=detail_msg_id,
+            text=text,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
+        )
+
+        return
+
+    # ======================================
     # פתיחת אימות בודד
     # ======================================
     if data.startswith("OPEN_VERIFY_"):

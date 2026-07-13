@@ -1,4 +1,8 @@
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import ContextTypes
 
 from services.verify_admin_service import (
@@ -24,7 +28,6 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verify = get_verification_by_id(verification_id)
 
         if not verify:
-
             await query.answer(
                 "❌ האימות לא נמצא.",
                 show_alert=True
@@ -32,12 +35,18 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not verify["id_photo"]:
-
             await query.answer(
                 "⚠️ אין תמונת תעודת זהות.",
                 show_alert=True
             )
             return
+
+        # שמירת message_id של הודעת פרטי האימות — ייחודי לפי מזהה האימות
+        context.user_data[f"verify_detail_msg_id_{verification_id}"] = query.message.message_id
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"MEDIA_BACK_{verification_id}")]
+        ])
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
@@ -45,7 +54,8 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=(
                 f"🪪 תעודת זהות\n"
                 f"אימות #{verify['id']}"
-            )
+            ),
+            reply_markup=keyboard
         )
 
         return
@@ -58,12 +68,9 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         verification_id = int(data.split("_")[-1])
 
-        verify = get_verification_by_id(
-            verification_id
-        )
+        verify = get_verification_by_id(verification_id)
 
         if not verify:
-
             await query.answer(
                 "❌ האימות לא נמצא.",
                 show_alert=True
@@ -71,12 +78,18 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not verify["selfie"]:
-
             await query.answer(
                 "⚠️ אין סלפי.",
                 show_alert=True
             )
             return
+
+        # שמירת message_id של הודעת פרטי האימות — ייחודי לפי מזהה האימות
+        context.user_data[f"verify_detail_msg_id_{verification_id}"] = query.message.message_id
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"MEDIA_BACK_{verification_id}")]
+        ])
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
@@ -84,12 +97,13 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=(
                 f"🤳 סלפי\n"
                 f"אימות #{verify['id']}"
-            )
+            ),
+            reply_markup=keyboard
         )
 
         return
-    
-        # ======================================
+
+    # ======================================
     # הצגת צילום מסך
     # ======================================
 
@@ -97,12 +111,9 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         verification_id = int(data.split("_")[-1])
 
-        verify = get_verification_by_id(
-            verification_id
-        )
+        verify = get_verification_by_id(verification_id)
 
         if not verify:
-
             await query.answer(
                 "❌ האימות לא נמצא.",
                 show_alert=True
@@ -116,31 +127,36 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # שמירת message_id של הודעת פרטי האימות — ייחודי לפי מזהה האימות
+        context.user_data[f"verify_detail_msg_id_{verification_id}"] = query.message.message_id
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"MEDIA_BACK_{verification_id}")]
+        ])
+
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=verify["social"],
             caption=(
                 f"📱 צילום מסך\n"
                 f"אימות #{verify['id']}"
-            )
+            ),
+            reply_markup=keyboard
         )
 
         return
-    
-        # ======================================
+
+    # ======================================
     # הצגת סרטון
     # ======================================
-             
+
     if data.startswith("VIEW_VIDEO_"):
 
         verification_id = int(data.split("_")[-1])
 
-        verify = get_verification_by_id(
-            verification_id
-        )
+        verify = get_verification_by_id(verification_id)
 
         if not verify:
-
             await query.answer(
                 "❌ האימות לא נמצא.",
                 show_alert=True
@@ -148,12 +164,18 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not verify["video"]:
-
             await query.answer(
                 "⚠️ אין סרטון.",
                 show_alert=True
             )
             return
+
+        # שמירת message_id של הודעת פרטי האימות — ייחודי לפי מזהה האימות
+        context.user_data[f"verify_detail_msg_id_{verification_id}"] = query.message.message_id
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"MEDIA_BACK_{verification_id}")]
+        ])
 
         await context.bot.send_video(
             chat_id=query.message.chat_id,
@@ -161,7 +183,8 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=(
                 f"🎥 סרטון אימות\n"
                 f"אימות #{verify['id']}"
-            )
+            ),
+            reply_markup=keyboard
         )
 
         return

@@ -47,8 +47,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. מדיה של אימותים
     if data.startswith("VIEW_"):
-        return await verify_media_menu(update, context)
+       return await verify_media_menu(update, context)
 
+    if data.startswith("MEDIA_BACK_"):
+        return await verify_admin_menu(update, context)
+ 
     # 2. התחלת אימות
     if data == "START_VERIFY":
         return await start_verify(update, context)
