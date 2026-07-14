@@ -454,6 +454,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verification_id = int(data.split("_")[-1])
 
         context.user_data["message_verification_id"] = verification_id
+        context.user_data[query.from_user.id] = {"mode": "send_message"}
 
         await query.message.reply_text(
             "✍️ כתוב עכשיו את ההודעה שברצונך לשלוח למשתמש."

@@ -161,7 +161,7 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ האימות לא נמצא."
             )
-
+        context.user_data.pop(user_id, None)
         return
 
     state = context.user_data.get(user_id)
