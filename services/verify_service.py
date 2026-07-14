@@ -168,10 +168,11 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=verify["telegram_id"],
                 text=(
-                    "📩 הודעה מהנהלת VerifyManager\n\n"
+                "🦋 התקבלה הודעה מצוות הבוט\n"
+                    "────────────────────\n"
                     f"{update.message.text}"
+                  )
                 )
-            )
 
             await update.message.reply_text(
                 "✅ ההודעה נשלחה למשתמש."
