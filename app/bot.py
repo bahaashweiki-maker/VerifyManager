@@ -81,6 +81,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await verify_admin_menu(update, context)
 
     # 5. מעבר בין דפים רגילים
+    if data == "IGNORE":
+        return
     try:
         await update.callback_query.message.delete()
     except:

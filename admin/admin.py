@@ -42,6 +42,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard,
             parse_mode="HTML"
         )
+        return
     else:
         try:
            await update.message.delete()

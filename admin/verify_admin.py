@@ -18,11 +18,14 @@ from services.verify_admin_service import (
 
 
 async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    
+    print("VERIFY ADMIN MENU LOADED")
 
     query = update.callback_query
-    await query.answer()
-
+   
     data = query.data
+    
+    print("CALLBACK:", data)
    
     # ======================================
     # אימותים ממתינים — הצגת רשימה
@@ -45,7 +48,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
 
-        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+            buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
 
         keyboard = InlineKeyboardMarkup(buttons)
 
@@ -77,7 +80,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
 
-        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+        buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
 
         keyboard = InlineKeyboardMarkup(buttons)
 
@@ -109,7 +112,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
 
-        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+        buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
 
         keyboard = InlineKeyboardMarkup(buttons)
 
@@ -141,7 +144,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
 
-        buttons.append([InlineKeyboardButton("🏠 חזרה למערכת הניהול", callback_data="ADMIN_HOME")])
+        buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
 
         keyboard = InlineKeyboardMarkup(buttons)
 
@@ -202,6 +205,9 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         vid = verify["id"]
         back_target = context.user_data.get("verify_source", "VERIFY_PENDING")
+        print(">>> BACK TARGET:", back_target)
+        
+        context.user_data[f"verify_source_{verification_id}"] = back_target
 
         detail_keyboard = InlineKeyboardMarkup([
             [
@@ -299,8 +305,14 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # [תיקון ניווט] קריאת מקור הניווט מ-context.user_data
         # נשמר בעת לחיצה על VERIFY_PENDING / VERIFY_APPROVED / VERIFY_REJECTED / VERIFY_BLOCKED
-        # כך כפתור "חזרה" תמיד חוזר לרשימה הנכונה, ולא תמיד ל-VERIFY_PENDING
-        back_target = context.user_data.get("verify_source", "VERIFY_PENDING")
+        # כך כפתור "חזרה" תמיד חוזר לרשימה הנכונה, ולא תמיד ל-VERIFY_PENDING   
+        back_target = context.user_data.get(
+            f"verify_source_{verification_id}",
+            context.user_data.get("verify_source", "VERIFY_PENDING")
+            
+        )
+        print("OPEN_VERIFY verification_id:", verification_id)
+        print("OPEN_VERIFY back_target:", back_target)
 
         keyboard = InlineKeyboardMarkup([
                 [
