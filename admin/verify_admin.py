@@ -44,11 +44,12 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["verify_source"] = "VERIFY_PENDING"
 
         buttons = []
+        
         for v in verifications:
             label = f"👤 {v['full_name'] or v['username'] or 'משתמש לא ידוע'} (#{v['id']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"OPEN_VERIFY_{v['id']}")])
 
-            buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
+        buttons.append([InlineKeyboardButton("⬅️ חזרה למערכת ניהול האימותים", callback_data="ADMIN_VERIFY")])
 
         keyboard = InlineKeyboardMarkup(buttons)
 
@@ -284,22 +285,28 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not verify:
             await query.edit_message_text("⚠️ האימות לא נמצא.")
             return
+        
+        
+
+        status_map = {
+            "pending": "🟡 ממתין לבדיקה",
+            "approved": "✅ מאומת",
+            "rejected": "❌ נדחה",
+            "blocked": "🚫 חסום",
+        }
+
+        date = f"{verify['created_at'][8:10]}.{verify['created_at'][5:7]}.{verify['created_at'][:4]}"
+        time = verify["created_at"][11:16]
 
         text = (
-    f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n"
-    f"🔎 <b>פרטי אימות #{verify['id']}</b>\n\n"
-    
-    f"🆔 <b>Telegram ID:</b> <code>{verify['telegram_id']}</code>\n\n"
-    f"👤 <b>שם מלא:</b> {verify['full_name'] or '-'}\n"
-    f"🔗 <b>Username:</b> @{verify['username'] or '-'}\n\n"
-    f"🆔 <b>מספר אימות:</b> <code>{verify['id']}</code>\n\n"
-
-    f"📅 <b>תאריך:</b> {verify['created_at'][:10]}\n"
-    f"🕒 <b>שעה:</b> {verify['created_at'][11:19]}\n\n"
-
-    f"🔑 <b>קוד אימות:</b> {verify['code'] or '-'}\n"
-    f"📌 <b>סטטוס:</b> {verify['status']}"
-)
+            f"📄 <b>אימות {current_index + 1} מתוך {total}</b>\n\n"
+            f"👤 <b>{verify['full_name'] or 'ללא שם'}</b>\n"
+            f"{status_map.get(verify['status'], verify['status'])}\n\n"
+            f"🔗 <b>{'@' + verify['username'] if verify['username'] else 'ללא Username'}</b>\n"
+            f"🆔 <code>{verify['telegram_id']}</code>\n\n"
+            f"🔑 <b>קוד אימות:</b> {verify['code'] or '-'}\n\n"
+            f"📅 {date} | 🕒 {time}"
+        )
 
         vid = verify["id"]
 
@@ -383,15 +390,8 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         return
-
-        # ======================================
-        # דחה אימות (placeholder)
-        # ======================================
-        if data.startswith("VERIFY_REJECT_"):
-            await query.answer("❌ בקרוב.", show_alert=True)
-            return
-            
-            # ======================================
+    
+    # ======================================
     # דחה אימות
     # ======================================
     if data.startswith("VERIFY_REJECT_"):

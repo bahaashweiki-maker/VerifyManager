@@ -72,7 +72,27 @@ async def start_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     user_id = user.id
+    
+    # בדיקה האם למשתמש יש Username
+    if not user.username:
 
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 חזרה", callback_data="HOME")]
+        ])
+
+        await query.edit_message_text(
+            "⚠️ *לא ניתן להתחיל את תהליך האימות.*\n\n"
+            "כדי להגיש בקשת אימות יש להגדיר *שם משתמש* בטלגרם.\n\n"
+            "שם משתמש הוא השם שמתחיל בסימן @.\n\n"
+            "לאחר שתגדיר שם משתמש,\n"
+            "חזור לבוט ולחץ שוב על *התחל אימות*.",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+        return
+    
+    
     verify_code = random.randint(1000, 9999)
 
     context.user_data[user_id] = {
