@@ -23,6 +23,8 @@ import os
 import logging
 from contextlib import contextmanager
 from typing import Generator, List, Optional
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # -----------------------------------------------------------------------
 # הגדרות גלובליות
@@ -129,6 +131,7 @@ def create_tables() -> bool:
     תקנית של sqlite3 ב-Python, ולכן אין לעטוף ב-transaction ידני.
     """
     try:
+        
         with get_connection() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS verifications (
@@ -229,14 +232,15 @@ def create_verification(
         ה-id של הרשומה החדשה שנוצרה, או -1 במקרה של כשל.
     """
     try:
+        now_il = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d %H:%M:%S")
         with get_connection() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verifications
-                    (telegram_id, full_name, username, id_photo, selfie, social, video, code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (telegram_id, full_name, username, id_photo, selfie, social, video, code, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (telegram_id, full_name, username, id_photo, selfie, social, video, code),
+                (telegram_id, full_name, username, id_photo, selfie, social, video, code, now_il),
             )
             conn.commit()
             new_id: int = cur.lastrowid  # type: ignore[assignment]

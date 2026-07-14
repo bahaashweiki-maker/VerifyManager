@@ -6,6 +6,7 @@ from app.engine.page_engine import PageEngine
 import random
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from database.database import create_verification
 
 ADMIN_CHAT_ID = 1751674910   # לשנות למזהה המנהל
@@ -336,7 +337,9 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
         ]
     ])
     
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    print(now)
+    print(now.tzinfo)
     text = (
     "🚨 התקבל אימות חדש\n\n"
     f"🪪 מספר אימות: #{verification_id}\n\n"
