@@ -43,8 +43,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     else:
-        await update.message.reply_text(
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        try:
+           await update.message.delete()
+        except:
+            pass
+
+    await update.message.reply_text(
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
