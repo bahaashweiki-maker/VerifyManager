@@ -17,16 +17,37 @@ from services.verify_service import (
 
 from app.engine.page_engine import PageEngine
 
-from admin.admin import admin_panel
+from admin.admin import admin_panel, ADMIN_ID
 from admin.verify_admin import verify_admin_menu
 from admin.verify_media import verify_media_menu
+
+from database.publishing_models     import init_publishing_db
+from admin.publishing_admin         import build_publishing_handler
+from app.engine.publishing_renderer import handle_user_nav, render_home
 
 
 # -----------------------------
 # פקודת /start
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await PageEngine.show_page(update, context, "HOME")
+    chat_id = update.effective_chat.id
+    bot     = context.bot
+
+    # מחיקת הודעת הבית הקודמת של הבוט (אם קיימת) — ולא של הודעת /start של המשתמש
+    prev_msg_id = context.user_data.get("home_msg_id")
+    if prev_msg_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_msg_id)
+        except Exception:
+            pass  # ההודעה כבר נמחקה או פגה — ממשיכים
+        context.user_data.pop("home_msg_id", None)
+
+    # שליחת הודעת הבית החדשה ושמירת ה-message_id
+    msg_id = await render_home(bot, chat_id)
+    if msg_id is not None:
+        context.user_data["home_msg_id"] = msg_id
+    else:
+        await PageEngine.show_page(update, context, "HOME")
 
 
 # -----------------------------
@@ -41,17 +62,21 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
     data = query.data
+
+    # מודול הפרסום — ניווט משתמש (מטפל ב-answer() בעצמו)
+    if data.startswith("pub:user:"):
+        return await handle_user_nav(update, context)
+
+    await query.answer()
 
     # 1. מדיה של אימותים
     if data.startswith("VIEW_"):
-       return await verify_media_menu(update, context)
+        return await verify_media_menu(update, context)
 
     if data.startswith("MEDIA_BACK_"):
         return await verify_admin_menu(update, context)
- 
+
     # 2. התחלת אימות
     if data == "START_VERIFY":
         return await start_verify(update, context)
@@ -83,9 +108,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 5. מעבר בין דפים רגילים
     if data == "IGNORE":
         return
+
+    # pub: שנשאר כאן (מצב שגוי) — לא מעבירים ל-PageEngine
+    if data.startswith("pub:"):
+        return
+
     try:
         await update.callback_query.message.delete()
-    except:
+    except Exception:
         pass
     await PageEngine.show_page(update, context, data)
 
@@ -102,6 +132,17 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # אתחול DB של מודול הפרסום
+    init_publishing_db()
+
+    # ConversationHandler של ניהול פרסומים (לפני ה-handler הכללי)
+    app.add_handler(
+        build_publishing_handler(
+            is_admin_fn=lambda u: u.effective_user.id == ADMIN_ID
+        ),
+        group=-1,
+    )
 
     # /start
     app.add_handler(CommandHandler("start", start))

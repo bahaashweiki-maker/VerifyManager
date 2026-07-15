@@ -22,12 +22,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🪪 מערכת אימותים", callback_data="ADMIN_VERIFY")],
-        [InlineKeyboardButton("📢 פרסומים", callback_data="ADMIN_BROADCAST")],
-        [InlineKeyboardButton("👥 משתמשים", callback_data="ADMIN_USERS")],
-        [InlineKeyboardButton("📊 סטטיסטיקות", callback_data="ADMIN_STATISTICS")],
-        [InlineKeyboardButton("⚙️ הגדרות", callback_data="ADMIN_SETTINGS")],
-        [InlineKeyboardButton("🚪 יציאה", callback_data="HOME")]
+        [InlineKeyboardButton("🪪 מערכת אימותים",  callback_data="ADMIN_VERIFY")],
+        [InlineKeyboardButton("📋 ניהול פרסומים",   callback_data="pub:main")],
+        [InlineKeyboardButton("📢 פרסומים",         callback_data="ADMIN_BROADCAST")],
+        [InlineKeyboardButton("👥 משתמשים",         callback_data="ADMIN_USERS")],
+        [InlineKeyboardButton("📊 סטטיסטיקות",      callback_data="ADMIN_STATISTICS")],
+        [InlineKeyboardButton("⚙️ הגדרות",           callback_data="ADMIN_SETTINGS")],
+        [InlineKeyboardButton("🚪 יציאה",            callback_data="pub:user:home")],
     ])
 
     text = (
@@ -36,21 +37,27 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "בחר את המערכת שברצונך לנהל:"
     )
 
+    # תמיד delete + send — עקבי עם publishing_renderer ומונע קריסה
+    # כשההודעה הקודמת הייתה תמונה (edit_message_text נכשל על הודעות מדיה).
     if update.callback_query:
-        await update.callback_query.edit_message_text(
+        try:
+            await update.callback_query.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
             text=text,
             reply_markup=keyboard,
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
-        return
     else:
         try:
-           await update.message.delete()
-        except:
+            await update.message.delete()
+        except Exception:
             pass
-
-    await update.message.reply_text(
-        text=text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
