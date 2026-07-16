@@ -42,17 +42,34 @@ def get_home() -> Optional[sqlite3.Row]:
 # עדכון שדות
 # ---------------------------------------------------------------------------
 
-def set_home_image(file_id: Optional[str]) -> bool:
+def set_home_image(file_id: Optional[str], media_type: str = "photo") -> bool:
     """
-    מעדכן את image_file_id של דף הבית.
+    מעדכן את image_file_id ואת media_type של דף הבית.
 
     Parameters:
-        file_id: file_id של תמונה מטלגרם, או None לניקוי.
+        file_id:    file_id של מדיה מטלגרם, או None לניקוי.
+        media_type: סוג המדיה ("photo", "video", "animation", "audio",
+                    "voice", "document", "video_note", "sticker").
 
     Returns:
         True אם עודכן, False בשגיאה.
     """
-    return _update_home_field("image_file_id", file_id)
+    try:
+        with get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE publishing_home"
+                " SET image_file_id = ?, media_type = ?, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = 1",
+                (file_id, media_type),
+            )
+            conn.commit()
+            updated = cur.rowcount > 0
+        if not updated:
+            logger.warning("set_home_image: singleton row (id=1) not found")
+        return updated
+    except sqlite3.Error as exc:
+        logger.error("set_home_image failed: %s", exc, exc_info=True)
+        return False
 
 
 def set_home_text(text: Optional[str]) -> bool:

@@ -137,6 +137,34 @@ _BTN_MOVE_FN = {
 }
 
 
+# ---------------------------------------------------------------------------
+# חילוץ מדיה מהודעה — מחזיר (file_id, media_type)
+# ---------------------------------------------------------------------------
+
+def _extract_media(message) -> tuple:
+    """
+    מחלץ file_id ו-media_type מכל הודעת מדיה נתמכת.
+    מחזיר (None, "photo") אם לא נמצאה מדיה מוכרת.
+    """
+    if message.photo:
+        return message.photo[-1].file_id, "photo"
+    if message.video:
+        return message.video.file_id, "video"
+    if message.animation:
+        return message.animation.file_id, "animation"
+    if message.audio:
+        return message.audio.file_id, "audio"
+    if message.voice:
+        return message.voice.file_id, "voice"
+    if message.document:
+        return message.document.file_id, "document"
+    if message.video_note:
+        return message.video_note.file_id, "video_note"
+    if message.sticker:
+        return message.sticker.file_id, "sticker"
+    return None, "photo"
+
+
 # ===========================================================================
 # FACTORY
 # ===========================================================================
@@ -201,7 +229,7 @@ def build_publishing_handler(
     async def cb_home_edit_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
         await update.callback_query.edit_message_text(
-            "שלח את התמונה החדשה לדף הבית:",
+            "שלח מדיה לדף הבית (תמונה, וידאו, אנימציה, אודיו, קול, קובץ):",
             reply_markup=kb_wait_input(cb("home", "menu")),
         )
         return S_HOME_WAIT_IMAGE
@@ -225,11 +253,14 @@ def build_publishing_handler(
         return await _refresh_home(update)
 
     async def msg_home_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        if not update.message.photo:
-            await update.message.reply_text("אנא שלח תמונה.")
+        file_id, media_type = _extract_media(update.message)
+        if not file_id:
+            await update.message.reply_text(
+                "אנא שלח מדיה (תמונה, וידאו, אנימציה, אודיו, קול או קובץ)."
+            )
             return S_HOME_WAIT_IMAGE
-        update_home_image(update.message.photo[-1].file_id)
-        await update.message.reply_text("התמונה עודכנה.")
+        update_home_image(file_id, media_type)
+        await update.message.reply_text("המדיה עודכנה.")
         return await _send_home_menu(update, context)
 
     async def msg_home_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -321,7 +352,7 @@ def build_publishing_handler(
         page_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_PAGE_ID] = page_id
         await update.callback_query.edit_message_text(
-            "שלח את התמונה לעמוד:",
+            "שלח מדיה לעמוד (תמונה, וידאו, אנימציה, אודיו, קול, קובץ):",
             reply_markup=kb_wait_input(cb("page", "view", page_id)),
         )
         return S_PAGE_WAIT_IMAGE
@@ -391,11 +422,14 @@ def build_publishing_handler(
 
     async def msg_page_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         page_id = context.user_data.get(_K_PAGE_ID)
-        if not update.message.photo or not page_id:
-            await update.message.reply_text("אנא שלח תמונה.")
+        file_id, media_type = _extract_media(update.message)
+        if not file_id or not page_id:
+            await update.message.reply_text(
+                "אנא שלח מדיה (תמונה, וידאו, אנימציה, אודיו, קול או קובץ)."
+            )
             return S_PAGE_WAIT_IMAGE
-        pub_update_page_image(page_id, update.message.photo[-1].file_id)
-        await update.message.reply_text("התמונה עודכנה.")
+        pub_update_page_image(page_id, file_id, media_type)
+        await update.message.reply_text("המדיה עודכנה.")
         return await _send_page(update, context, page_id)
 
     async def msg_page_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -802,7 +836,16 @@ def build_publishing_handler(
     # ===================================================================
 
     text_msg  = filters.TEXT & ~filters.COMMAND
-    photo_msg = filters.PHOTO
+    media_msg = (
+        filters.PHOTO
+        | filters.VIDEO
+        | filters.ANIMATION
+        | filters.AUDIO
+        | filters.VOICE
+        | filters.Document.ALL
+        | filters.VIDEO_NOTE
+        | filters.Sticker.ALL
+    )
 
     return ConversationHandler(
         entry_points=[
@@ -824,7 +867,7 @@ def build_publishing_handler(
                 CallbackQueryHandler(cb_main,             pattern=r"^pub:main$"),
             ],
             S_HOME_WAIT_IMAGE: [
-                MessageHandler(photo_msg, msg_home_image),
+                MessageHandler(media_msg, msg_home_image),
                 CallbackQueryHandler(cb_home_menu, pattern=r"^pub:home:menu$"),
             ],
             S_HOME_WAIT_TEXT: [
@@ -853,7 +896,7 @@ def build_publishing_handler(
                 CallbackQueryHandler(cb_pages_list, pattern=r"^pub:pages:list:"),
             ],
             S_PAGE_WAIT_IMAGE: [
-                MessageHandler(photo_msg, msg_page_image),
+                MessageHandler(media_msg, msg_page_image),
                 CallbackQueryHandler(cb_page_view,  pattern=r"^pub:page:view:"),
             ],
             S_PAGE_WAIT_TEXT: [

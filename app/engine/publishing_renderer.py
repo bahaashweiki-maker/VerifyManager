@@ -169,6 +169,66 @@ async def _delete_message(message) -> None:
 
 
 # ---------------------------------------------------------------------------
+# _send_media — שולח מדיה לפי media_type
+# ---------------------------------------------------------------------------
+
+async def _send_media(
+    bot: Bot,
+    chat_id: int,
+    file_id: str,
+    media_type: str,
+    caption: str,
+    keyboard: InlineKeyboardMarkup,
+):
+    """
+    שולח את הודעת המדיה המתאימה לפי media_type.
+
+    video_note ו-sticker אינם תומכים ב-caption ב-Telegram API —
+    עבורם נשלח המדיה עם ה-keyboard בלבד.
+    """
+    if media_type == "video":
+        return await bot.send_video(
+            chat_id=chat_id, video=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    elif media_type == "animation":
+        return await bot.send_animation(
+            chat_id=chat_id, animation=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    elif media_type == "audio":
+        return await bot.send_audio(
+            chat_id=chat_id, audio=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    elif media_type == "voice":
+        return await bot.send_voice(
+            chat_id=chat_id, voice=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    elif media_type == "document":
+        return await bot.send_document(
+            chat_id=chat_id, document=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    elif media_type == "video_note":
+        return await bot.send_video_note(
+            chat_id=chat_id, video_note=file_id,
+            reply_markup=keyboard,
+        )
+    elif media_type == "sticker":
+        return await bot.send_sticker(
+            chat_id=chat_id, sticker=file_id,
+            reply_markup=keyboard,
+        )
+    else:  # photo (ברירת מחדל)
+        return await bot.send_photo(
+            chat_id=chat_id, photo=file_id,
+            caption=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+
+
+# ---------------------------------------------------------------------------
 # render_home
 # ---------------------------------------------------------------------------
 
@@ -194,13 +254,8 @@ async def render_home(
             keyboard = InlineKeyboardMarkup(_SYSTEM_BUTTONS)
 
         if image:
-            sent = await bot.send_photo(
-                chat_id=chat_id,
-                photo=image,
-                caption=text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
+            media_type = home["media_type"] if home["media_type"] else "photo"
+            sent = await _send_media(bot, chat_id, image, media_type, text, keyboard)
         else:
             sent = await bot.send_message(
                 chat_id=chat_id,
@@ -260,13 +315,8 @@ async def render_page(
         image = page["image_file_id"]
 
         if image:
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=image,
-                caption=caption,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
+            media_type = page["media_type"] if page["media_type"] else "photo"
+            await _send_media(bot, chat_id, image, media_type, caption, keyboard)
         else:
             await bot.send_message(
                 chat_id=chat_id,

@@ -40,19 +40,21 @@ def get_home_data() -> Optional[sqlite3.Row]:
 # עדכון תמונה
 # ---------------------------------------------------------------------------
 
-def update_home_image(file_id: Optional[str]) -> bool:
+def update_home_image(file_id: Optional[str], media_type: str = "photo") -> bool:
     """
-    מעדכן את תמונת דף הבית.
+    מעדכן את מדיית דף הבית.
 
     Parameters:
-        file_id: ה-file_id מטלגרם (str), או None לניקוי התמונה.
+        file_id:    ה-file_id מטלגרם (str), או None לניקוי המדיה.
+        media_type: סוג המדיה ("photo", "video", "animation", "audio",
+                    "voice", "document", "video_note", "sticker").
 
     Returns:
         True אם הצליח, False בכשל.
     """
-    ok = set_home_image(file_id)
+    ok = set_home_image(file_id, media_type)
     if ok:
-        logger.info("Home image updated: %s", file_id or "cleared")
+        logger.info("Home image updated: %s (type=%s)", file_id or "cleared", media_type)
     return ok
 
 

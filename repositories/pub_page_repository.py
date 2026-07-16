@@ -146,9 +146,24 @@ def pub_update_page_title(page_id: int, title: str) -> bool:
     return _update_page_field(page_id, "title", title)
 
 
-def pub_update_page_image(page_id: int, file_id: Optional[str]) -> bool:
-    """עדכון תמונת עמוד (file_id טלגרם, או None לניקוי)."""
-    return _update_page_field(page_id, "image_file_id", file_id)
+def pub_update_page_image(page_id: int, file_id: Optional[str], media_type: str = "photo") -> bool:
+    """עדכון מדיית עמוד (file_id טלגרם, או None לניקוי) וסוג המדיה."""
+    try:
+        with get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE publishing_pages"
+                " SET image_file_id = ?, media_type = ?, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = ?",
+                (file_id, media_type, page_id),
+            )
+            conn.commit()
+            ok = cur.rowcount > 0
+        if not ok:
+            logger.warning("pub_update_page_image: id=%d not found", page_id)
+        return ok
+    except sqlite3.Error as exc:
+        logger.error("pub_update_page_image(id=%d) failed: %s", page_id, exc, exc_info=True)
+        return False
 
 
 def pub_update_page_text(page_id: int, text: Optional[str]) -> bool:
