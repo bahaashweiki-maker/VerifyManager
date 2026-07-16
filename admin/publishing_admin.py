@@ -106,6 +106,8 @@ from repositories.pub_button_repository import (
     pub_toggle_button_active,
     pub_move_button_up,
     pub_move_button_down,
+    pub_move_button_left,
+    pub_move_button_right,
     pub_duplicate_button,
 )
 
@@ -124,6 +126,15 @@ _K_NEW_PTYPE  = "_pub_new_page_type"
 _K_NEW_PARENT = "_pub_new_parent"
 _K_DEL_TARGET = "_pub_del_target"   # dict {kind, id, ...}
 _K_TARGET_PG  = "_pub_target_page"
+_K_ROW_INDEX  = "_pub_row_index"    # int = הוסף לשורה קיימת, None = שורה חדשה
+
+# מיפוי כיוון -> פונקציית הזזת כפתור
+_BTN_MOVE_FN = {
+    "up":    pub_move_button_up,
+    "down":  pub_move_button_down,
+    "left":  pub_move_button_left,
+    "right": pub_move_button_right,
+}
 
 
 # ===========================================================================
@@ -174,7 +185,7 @@ def build_publishing_handler(
         await answer_query(update)
         home = get_home_data()
         if home is None:
-            await answer_query(update, "❌ שגיאה בטעינת דף הבית", alert=True)
+            await answer_query(update, "שגיאה בטעינת דף הבית", alert=True)
             return S_MAIN_MENU
         await update.callback_query.edit_message_text(
             _home_text(home),
@@ -190,7 +201,7 @@ def build_publishing_handler(
     async def cb_home_edit_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
         await update.callback_query.edit_message_text(
-            "🖼 שלח את התמונה החדשה לדף הבית:",
+            "שלח את התמונה החדשה לדף הבית:",
             reply_markup=kb_wait_input(cb("home", "menu")),
         )
         return S_HOME_WAIT_IMAGE
@@ -203,7 +214,7 @@ def build_publishing_handler(
     async def cb_home_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
         await update.callback_query.edit_message_text(
-            "✏️ שלח את הטקסט החדש לדף הבית (HTML נתמך):",
+            "שלח את הטקסט החדש לדף הבית (HTML נתמך):",
             reply_markup=kb_wait_input(cb("home", "menu")),
         )
         return S_HOME_WAIT_TEXT
@@ -215,15 +226,15 @@ def build_publishing_handler(
 
     async def msg_home_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if not update.message.photo:
-            await update.message.reply_text("❌ אנא שלח תמונה.")
+            await update.message.reply_text("אנא שלח תמונה.")
             return S_HOME_WAIT_IMAGE
         update_home_image(update.message.photo[-1].file_id)
-        await update.message.reply_text("✅ התמונה עודכנה.")
+        await update.message.reply_text("התמונה עודכנה.")
         return await _send_home_menu(update, context)
 
     async def msg_home_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         update_home_text((update.message.text or "").strip())
-        await update.message.reply_text("✅ הטקסט עודכן.")
+        await update.message.reply_text("הטקסט עודכן.")
         return await _send_home_menu(update, context)
 
     async def _refresh_home(update: Update) -> int:
@@ -268,9 +279,9 @@ def build_publishing_handler(
         parent_id = None if raw == "root" else int(raw)
         pages     = pub_get_pages_by_parent(parent_id)
         back_cb   = cb("main") if parent_id is None else cb("page", "view", parent_id)
-        title     = "📄 <b>עמודים ראשיים</b>" if parent_id is None else "📂 <b>עמודי-בן</b>"
+        title     = "עמודים ראשיים" if parent_id is None else "עמודי-בן"
         await update.callback_query.edit_message_text(
-            title,
+            f"<b>{title}</b>",
             reply_markup=kb_pages_list(pages, parent_id, back_cb),
             parse_mode="HTML",
         )
@@ -289,7 +300,7 @@ def build_publishing_handler(
         context.user_data.update({_K_PAGE_ID: None, _K_NEW_PTYPE: ptype, _K_NEW_PARENT: parent_id})
         label = "קטלוג" if ptype == "catalog" else "עמוד"
         await update.callback_query.edit_message_text(
-            f"➕ <b>עמוד חדש ({label})</b>\nשלח את הכותרת:",
+            f"<b>עמוד חדש ({label})</b>\nשלח את הכותרת:",
             reply_markup=kb_wait_input(cb("pages", "list", parent_id or "root")),
             parse_mode="HTML",
         )
@@ -297,30 +308,30 @@ def build_publishing_handler(
 
     async def cb_page_edit_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        page_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        page_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_PAGE_ID] = page_id
         await update.callback_query.edit_message_text(
-            "✏️ שלח את הכותרת החדשה:",
+            "שלח את הכותרת החדשה:",
             reply_markup=kb_wait_input(cb("page", "view", page_id)),
         )
         return S_PAGE_WAIT_TITLE
 
     async def cb_page_edit_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        page_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        page_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_PAGE_ID] = page_id
         await update.callback_query.edit_message_text(
-            "🖼 שלח את התמונה לעמוד:",
+            "שלח את התמונה לעמוד:",
             reply_markup=kb_wait_input(cb("page", "view", page_id)),
         )
         return S_PAGE_WAIT_IMAGE
 
     async def cb_page_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        page_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        page_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_PAGE_ID] = page_id
         await update.callback_query.edit_message_text(
-            "📝 שלח את הטקסט (HTML נתמך):",
+            "שלח את הטקסט (HTML נתמך):",
             reply_markup=kb_wait_input(cb("page", "view", page_id)),
         )
         return S_PAGE_WAIT_TEXT
@@ -348,7 +359,7 @@ def build_publishing_handler(
             "kind": "page", "id": page_id, "parent_id": page["parent_id"]
         }
         await update.callback_query.edit_message_text(
-            f"⚠️ למחוק את <b>{page['title']}</b>?\nכל עמודי-הבן והכפתורים ימחקו.",
+            f"למחוק את <b>{page['title']}</b>?\nכל עמודי-הבן והכפתורים ימחקו.",
             reply_markup=kb_confirm_delete(
                 confirm_cb=cb("confirm_delete"),
                 cancel_cb=cb("page", "view", page_id),
@@ -361,7 +372,7 @@ def build_publishing_handler(
         title   = (update.message.text or "").strip()
         page_id = context.user_data.get(_K_PAGE_ID)
         if not title:
-            await update.message.reply_text("❌ הכותרת לא יכולה להיות ריקה.")
+            await update.message.reply_text("הכותרת לא יכולה להיות ריקה.")
             return S_PAGE_WAIT_TITLE
         if page_id:
             ok = pub_update_page_title(page_id, title)
@@ -373,7 +384,7 @@ def build_publishing_handler(
             if ok:
                 context.user_data[_K_PAGE_ID] = new_id
                 page_id = new_id
-        await update.message.reply_text("✅ נשמר." if ok else "❌ שגיאה.")
+        await update.message.reply_text("נשמר." if ok else "שגיאה.")
         if page_id:
             return await _send_page(update, context, page_id)
         return S_PAGES_LIST
@@ -381,10 +392,10 @@ def build_publishing_handler(
     async def msg_page_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         page_id = context.user_data.get(_K_PAGE_ID)
         if not update.message.photo or not page_id:
-            await update.message.reply_text("❌ אנא שלח תמונה.")
+            await update.message.reply_text("אנא שלח תמונה.")
             return S_PAGE_WAIT_IMAGE
         pub_update_page_image(page_id, update.message.photo[-1].file_id)
-        await update.message.reply_text("✅ התמונה עודכנה.")
+        await update.message.reply_text("התמונה עודכנה.")
         return await _send_page(update, context, page_id)
 
     async def msg_page_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -392,7 +403,7 @@ def build_publishing_handler(
         if not page_id:
             return S_PAGES_LIST
         pub_update_page_text(page_id, (update.message.text or "").strip())
-        await update.message.reply_text("✅ הטקסט עודכן.")
+        await update.message.reply_text("הטקסט עודכן.")
         return await _send_page(update, context, page_id)
 
     async def _show_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page_id: int) -> int:
@@ -448,7 +459,7 @@ def build_publishing_handler(
                       else pub_get_buttons_for_page(owner_id))
         back_cb    = cb("home", "menu") if owner_type == "home" else cb("page", "view", owner_id)
         await update.callback_query.edit_message_text(
-            f"🎛 <b>כפתורים</b> ({len(buttons)})",
+            f"<b>כפתורים</b> ({len(buttons)})",
             reply_markup=kb_buttons_list(buttons, owner_type, owner_id, back_cb),
             parse_mode="HTML",
         )
@@ -459,9 +470,39 @@ def build_publishing_handler(
         parts      = parse_cb(update.callback_query.data)
         owner_type = parts[2]
         owner_id   = int(parts[3])
-        context.user_data.update({_K_OWNER_TYPE: owner_type, _K_OWNER_ID: owner_id, _K_BTN_ID: None})
+        context.user_data.update({
+            _K_OWNER_TYPE: owner_type,
+            _K_OWNER_ID:   owner_id,
+            _K_BTN_ID:     None,
+            _K_ROW_INDEX:  None,
+        })
         await update.callback_query.edit_message_text(
-            "➕ <b>כפתור חדש</b>\nבחר סוג:",
+            "<b>כפתור חדש</b>\nבחר סוג:",
+            reply_markup=kb_button_type_select(owner_type, owner_id),
+            parse_mode="HTML",
+        )
+        return S_BTN_SELECT_TYPE
+
+    async def cb_btn_add_to_row(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """
+        יוצר כפתור חדש באותו row_index של הכפתור הנוכחי.
+        לאחר היצירה ניתן לבדוק את כפתורי left/right בין שני הכפתורים בשורה.
+        """
+        await answer_query(update)
+        btn_id = int(parse_cb(update.callback_query.data)[2])
+        btn    = pub_get_button_by_id(btn_id)
+        if btn is None:
+            return S_BTN_LIST
+        owner_type = "home" if btn["home_id"] else "page"
+        owner_id   = btn["home_id"] or btn["page_id"]
+        context.user_data.update({
+            _K_OWNER_TYPE: owner_type,
+            _K_OWNER_ID:   owner_id,
+            _K_BTN_ID:     None,
+            _K_ROW_INDEX:  btn["row_index"],
+        })
+        await update.callback_query.edit_message_text(
+            "<b>כפתור חדש באותה שורה</b>\nבחר סוג:",
             reply_markup=kb_button_type_select(owner_type, owner_id),
             parse_mode="HTML",
         )
@@ -476,7 +517,7 @@ def build_publishing_handler(
         context.user_data.update({_K_BTN_TYPE: btype, _K_OWNER_TYPE: owner_type, _K_OWNER_ID: owner_id})
 
         if btype == "share":
-            btn_id = _do_create_btn(context, label="🔁 שיתוף", value="share")
+            btn_id = _do_create_btn(context, label="שיתוף", value="share")
             if btn_id and btn_id > 0:
                 context.user_data[_K_BTN_ID] = btn_id
                 return await _show_btn(update, context, btn_id)
@@ -485,13 +526,13 @@ def build_publishing_handler(
         if btype == "page_link":
             pages = pub_get_all_pages()
             await update.callback_query.edit_message_text(
-                "📄 בחר עמוד יעד:",
+                "בחר עמוד יעד:",
                 reply_markup=kb_select_target_page(pages, 0),
             )
             return S_BTN_SELECT_PAGE
 
         await update.callback_query.edit_message_text(
-            f"📝 סוג: <b>{BUTTON_TYPES[btype]}</b>\nשלח תווית לכפתור:",
+            f"סוג: <b>{BUTTON_TYPES[btype]}</b>\nשלח תווית לכפתור:",
             reply_markup=kb_wait_input(cb("btn", "list", owner_type, owner_id)),
             parse_mode="HTML",
         )
@@ -506,7 +547,7 @@ def build_publishing_handler(
         owner_type = context.user_data.get(_K_OWNER_TYPE, "home")
         owner_id   = context.user_data.get(_K_OWNER_ID, 1)
         await update.callback_query.edit_message_text(
-            f"📄 עמוד יעד: <b>{page['title'] if page else target_id}</b>\nשלח תווית לכפתור:",
+            f"עמוד יעד: <b>{page['title'] if page else target_id}</b>\nשלח תווית לכפתור:",
             reply_markup=kb_wait_input(cb("btn", "list", owner_type, owner_id)),
             parse_mode="HTML",
         )
@@ -519,31 +560,31 @@ def build_publishing_handler(
 
     async def cb_btn_edit_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_BTN_ID] = btn_id
         await update.callback_query.edit_message_text(
-            "✏️ שלח תווית חדשה:",
+            "שלח תווית חדשה:",
             reply_markup=kb_wait_input(cb("btn", "view", btn_id)),
         )
         return S_BTN_WAIT_LABEL
 
     async def cb_btn_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_BTN_ID] = btn_id
         await update.callback_query.edit_message_text(
-            "📋 שלח ערך חדש:",
+            "שלח ערך חדש:",
             reply_markup=kb_wait_input(cb("btn", "view", btn_id)),
         )
         return S_BTN_WAIT_VALUE
 
     async def cb_btn_edit_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """מציג בורר סוג לכפתור קיים (עדכון בלבד — לא יצירה)."""
+        """מציג בורר סוג לכפתור קיים (עדכון בלבד - לא יצירה)."""
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_BTN_ID] = btn_id
         await update.callback_query.edit_message_text(
-            "🔄 בחר סוג חדש לכפתור:",
+            "בחר סוג חדש לכפתור:",
             reply_markup=kb_button_type_change(btn_id),
         )
         return S_BTN_SELECT_TYPE
@@ -560,28 +601,45 @@ def build_publishing_handler(
 
     async def cb_btn_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         pub_toggle_button_active(btn_id)
         return await _show_btn(update, context, btn_id)
 
     async def cb_btn_move(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """
+        מטפל בהזזת כפתור בכל 4 הכיוונים:
+          up/down    -- שינוי row_index (מעבר שורה).
+          left/right -- swap sort_order בתוך אותה שורה.
+
+        אם ההזזה לא הצליחה (הכפתור כבר בקצה):
+          - מציג toast בלבד.
+          - לא קורא ל-answer_query().
+          - לא קורא ל-_show_btn() -- מונע BadRequest: Message is not modified.
+        """
+        parts     = parse_cb(update.callback_query.data)
+        direction = parts[1]
+        btn_id    = int(parts[2])
+        fn        = _BTN_MOVE_FN.get(direction)
+        moved     = fn(btn_id) if fn else False
+
+        if not moved:
+            await update.callback_query.answer("אין לאן להזיז")
+            return S_BTN_VIEW
+
         await answer_query(update)
-        parts  = parse_cb(update.callback_query.data)
-        btn_id = int(parts[2])  # תוקן: [2] במקום [3]
-        (pub_move_button_up if parts[1] == "up" else pub_move_button_down)(btn_id)
         return await _show_btn(update, context, btn_id)
 
     async def cb_btn_duplicate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         new_id = pub_duplicate_button(btn_id)
         if new_id and new_id > 0:
-            await answer_query(update, "✅ שוכפל")
+            await answer_query(update, "שוכפל")
         return await _refresh_btn_list(update, context)
 
     async def cb_btn_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
-        btn_id = int(parse_cb(update.callback_query.data)[2])  # תוקן: [2] במקום [3]
+        btn_id = int(parse_cb(update.callback_query.data)[2])
         btn    = pub_get_button_by_id(btn_id)
         if btn is None:
             return S_BTN_LIST
@@ -591,7 +649,7 @@ def build_publishing_handler(
             "kind": "btn", "id": btn_id, "owner_type": owner_type, "owner_id": owner_id
         }
         await update.callback_query.edit_message_text(
-            f"⚠️ למחוק את הכפתור <b>{btn['label']}</b>?",
+            f"למחוק את הכפתור <b>{btn['label']}</b>?",
             reply_markup=kb_confirm_delete(
                 confirm_cb=cb("confirm_delete"),
                 cancel_cb=cb("btn", "view", btn_id),
@@ -603,25 +661,22 @@ def build_publishing_handler(
     async def msg_btn_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         label      = (update.message.text or "").strip()
         btn_id     = context.user_data.get(_K_BTN_ID)
-        owner_type = context.user_data.get(_K_OWNER_TYPE, "home")
-        owner_id   = context.user_data.get(_K_OWNER_ID, 1)
         if not label:
-            await update.message.reply_text("❌ התווית לא יכולה להיות ריקה.")
+            await update.message.reply_text("התווית לא יכולה להיות ריקה.")
             return S_BTN_WAIT_LABEL
         if btn_id:
             pub_update_button_label(btn_id, label)
-            await update.message.reply_text("✅ עודכן.")
+            await update.message.reply_text("עודכן.")
             return await _send_btn(update, context, btn_id)
-        # כפתור חדש — שמור label, המתן ל-value
         context.user_data[_K_NEW_LABEL] = label
         btype = context.user_data.get(_K_BTN_TYPE, "text")
         hints = {
-            "text":     "הקלד את תוכן ההודעה:",
-            "url":      "הדבק קישור (https://...):",
-            "phone":    "הכנס מספר טלפון:",
-            "email":    "הכנס כתובת מייל:",
-            "location": "הכנס קואורדינטות (lat,lon):",
-            "page_link":"הכנס page_id יעד:",
+            "text":      "הקלד את תוכן ההודעה:",
+            "url":       "הדבק קישור (https://...):",
+            "phone":     "הכנס מספר טלפון:",
+            "email":     "הכנס כתובת מייל:",
+            "location":  "הכנס קואורדינטות (lat,lon):",
+            "page_link": "הכנס page_id יעד:",
         }
         await update.message.reply_text(hints.get(btype, "הכנס ערך:"))
         return S_BTN_WAIT_VALUE
@@ -631,17 +686,16 @@ def build_publishing_handler(
         btn_id = context.user_data.get(_K_BTN_ID)
         if btn_id:
             pub_update_button_value(btn_id, value)
-            await update.message.reply_text("✅ עודכן.")
+            await update.message.reply_text("עודכן.")
             return await _send_btn(update, context, btn_id)
-        # כפתור חדש
         label  = context.user_data.get(_K_NEW_LABEL, "כפתור")
         target = context.user_data.get(_K_TARGET_PG)
         new_id = _do_create_btn(context, label=label, value=value, target_page_id=target)
         if new_id and new_id > 0:
             context.user_data[_K_BTN_ID] = new_id
-            await update.message.reply_text("✅ הכפתור נוצר.")
+            await update.message.reply_text("הכפתור נוצר.")
             return await _send_btn(update, context, new_id)
-        await update.message.reply_text("❌ שגיאה.")
+        await update.message.reply_text("שגיאה.")
         return S_BTN_LIST
 
     # ===================================================================
@@ -656,18 +710,20 @@ def build_publishing_handler(
 
         if target["kind"] == "page":
             pub_delete_page(target["id"])
-            back_cb = cb("pages", "list", target.get("parent_id") or "root")
+            back_cb    = cb("pages", "list", target.get("parent_id") or "root")
+            next_state = S_PAGES_LIST
         else:
             pub_delete_button(target["id"])
-            back_cb = cb("btn", "list", target["owner_type"], target["owner_id"])
+            back_cb    = cb("btn", "list", target["owner_type"], target["owner_id"])
+            next_state = S_BTN_LIST
 
         await update.callback_query.edit_message_text(
-            "🗑 נמחק בהצלחה.",
+            "נמחק בהצלחה.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("◀️ חזור", callback_data=back_cb)
+                InlineKeyboardButton("חזור", callback_data=back_cb)
             ]]),
         )
-        return S_MAIN_MENU
+        return next_state
 
     # ===================================================================
     # helpers פנימיים
@@ -703,18 +759,13 @@ def build_publishing_handler(
         return S_BTN_VIEW
 
     async def _refresh_btn_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """
-        מרענן את רשימת הכפתורים מהדאטה שב-context — ללא מוטציה של update.
-        תוקן: במקום לשנות את update.callback_query.data (שאינו אפשרי ב-PTB v20),
-        בונה את הרשימה ישירות.
-        """
         owner_type = context.user_data.get(_K_OWNER_TYPE, "home")
         owner_id   = context.user_data.get(_K_OWNER_ID, 1)
         buttons    = (pub_get_buttons_for_home(owner_id) if owner_type == "home"
                       else pub_get_buttons_for_page(owner_id))
         back_cb    = cb("home", "menu") if owner_type == "home" else cb("page", "view", owner_id)
         await update.callback_query.edit_message_text(
-            f"🎛 <b>כפתורים</b> ({len(buttons)})",
+            f"<b>כפתורים</b> ({len(buttons)})",
             reply_markup=kb_buttons_list(buttons, owner_type, owner_id, back_cb),
             parse_mode="HTML",
         )
@@ -729,19 +780,21 @@ def build_publishing_handler(
         owner_type = context.user_data.get(_K_OWNER_TYPE, "home")
         owner_id   = context.user_data.get(_K_OWNER_ID, 1)
         btype      = context.user_data.get(_K_BTN_TYPE, "text")
+        row_index  = context.user_data.get(_K_ROW_INDEX)
         return pub_create_button(
             label=label,
             button_type=btype,
             value=value,
-            home_id=owner_id   if owner_type == "home" else None,
-            page_id=owner_id   if owner_type == "page" else None,
+            home_id=owner_id        if owner_type == "home" else None,
+            page_id=owner_id        if owner_type == "page" else None,
             target_page_id=target_page_id,
+            row_index=row_index,
         )
 
     def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         for key in (_K_BTN_ID, _K_PAGE_ID, _K_OWNER_TYPE, _K_OWNER_ID,
                     _K_BTN_TYPE, _K_NEW_LABEL, _K_NEW_PTYPE, _K_NEW_PARENT,
-                    _K_DEL_TARGET, _K_TARGET_PG):
+                    _K_DEL_TARGET, _K_TARGET_PG, _K_ROW_INDEX):
             context.user_data.pop(key, None)
 
     # ===================================================================
@@ -829,7 +882,8 @@ def build_publishing_handler(
                 CallbackQueryHandler(cb_btn_edit_type,  pattern=r"^pub:btn:edit_type:"),
                 CallbackQueryHandler(cb_btn_toggle,     pattern=r"^pub:btn:toggle:"),
                 CallbackQueryHandler(cb_btn_duplicate,  pattern=r"^pub:btn:duplicate:"),
-                CallbackQueryHandler(cb_btn_move,       pattern=r"^pub:btn:(up|down):"),
+                CallbackQueryHandler(cb_btn_add_to_row, pattern=r"^pub:btn:add_to_row:"),
+                CallbackQueryHandler(cb_btn_move,       pattern=r"^pub:btn:(up|down|left|right):"),
                 CallbackQueryHandler(cb_btn_delete,     pattern=r"^pub:btn:delete:"),
                 CallbackQueryHandler(cb_btn_list,       pattern=r"^pub:btn:list:"),
             ],
@@ -862,36 +916,36 @@ def build_publishing_handler(
 
 
 # ---------------------------------------------------------------------------
-# text builders — פנימיים
+# text builders -- פנימיים
 # ---------------------------------------------------------------------------
 
 def _home_text(home) -> str:
-    status = "🟢 פעיל" if home["is_active"] else "🔴 כבוי"
+    status = "פעיל" if home["is_active"] else "כבוי"
     return (
-        f"🏠 <b>דף הבית</b>\n"
+        f"<b>דף הבית</b>\n"
         f"סטטוס: {status}\n"
-        f"תמונה: {'✅' if home['image_file_id'] else '—'}\n"
-        f"טקסט: {'✅' if home['text'] else '—'}"
+        f"תמונה: {'יש' if home['image_file_id'] else 'אין'}\n"
+        f"טקסט: {'יש' if home['text'] else 'אין'}"
     )
 
 
 def _page_text(page, children_count: int) -> str:
-    icon   = "📂" if page["page_type"] == "catalog" else "📄"
-    status = "🟢 פעיל" if page["is_active"] else "🔴 כבוי"
+    icon   = "קטלוג" if page["page_type"] == "catalog" else "עמוד"
+    status = "פעיל" if page["is_active"] else "כבוי"
     return (
-        f"{icon} <b>{page['title']}</b>\n"
+        f"<b>{page['title']}</b> ({icon})\n"
         f"סטטוס: {status}\n"
-        f"תמונה: {'✅' if page['image_file_id'] else '—'}\n"
-        f"טקסט: {'✅' if page['text'] else '—'}\n"
+        f"תמונה: {'יש' if page['image_file_id'] else 'אין'}\n"
+        f"טקסט: {'יש' if page['text'] else 'אין'}\n"
         f"עמודי-בן: {children_count}"
     )
 
 
 def _btn_text(btn) -> str:
-    status = "🟢 פעיל" if btn["is_active"] else "🔴 כבוי"
+    status = "פעיל" if btn["is_active"] else "כבוי"
     return (
-        f"🎛 <b>{btn['label']}</b>\n"
+        f"<b>{btn['label']}</b>\n"
         f"סוג: {BUTTON_TYPES.get(btn['button_type'], btn['button_type'])}\n"
-        f"ערך: <code>{btn['value'] or '—'}</code>\n"
+        f"ערך: <code>{btn['value'] or 'אין'}</code>\n"
         f"סטטוס: {status}"
     )

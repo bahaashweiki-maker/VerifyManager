@@ -2,6 +2,15 @@
 admin/ui_helpers.py
 ---------------------
 רכיבי UI גנריים לשימוש בכל מודולי האדמין של הבוט.
+
+ייבוא מכל handler:
+    from admin.ui_helpers import (
+        back_button, cancel_button,
+        kb_back, kb_cancel, kb_confirm_delete,
+        answer_query, edit_or_send,
+    )
+
+הוסף כאן כל רכיב UI שמשמש יותר ממודול אחד.
 """
 
 from __future__ import annotations
@@ -20,37 +29,41 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# כפתורים גנריים
+# כפתורים גנריים — building blocks
 # ---------------------------------------------------------------------------
 
 def back_button(callback_data: str, label: str = "◀️ חזור") -> InlineKeyboardButton:
+    """כפתור חזרה גנרי."""
     return InlineKeyboardButton(label, callback_data=callback_data)
 
 
-def cancel_button(callback_data: str, label: str = "◀️ חזור") -> InlineKeyboardButton:
-    """ביטול = חזרה — אותו מינוח בכל מקום."""
+def cancel_button(callback_data: str, label: str = "❌ ביטול") -> InlineKeyboardButton:
+    """כפתור ביטול גנרי."""
     return InlineKeyboardButton(label, callback_data=callback_data)
 
 
 def delete_button(callback_data: str, label: str = "🗑 מחק") -> InlineKeyboardButton:
+    """כפתור מחיקה גנרי."""
     return InlineKeyboardButton(label, callback_data=callback_data)
 
 
 def confirm_button(callback_data: str, label: str = "✅ כן, מחק") -> InlineKeyboardButton:
+    """כפתור אישור מחיקה גנרי."""
     return InlineKeyboardButton(label, callback_data=callback_data)
 
 
 # ---------------------------------------------------------------------------
-# מקלדות גנריות
+# מקלדות גנריות — מוכנות לשליחה
 # ---------------------------------------------------------------------------
 
 def kb_back(callback_data: str, label: str = "◀️ חזור") -> InlineKeyboardMarkup:
+    """מקלדת עם כפתור חזרה בלבד."""
     return InlineKeyboardMarkup([[back_button(callback_data, label)]])
 
 
-def kb_cancel(callback_data: str, label: str = "◀️ חזור") -> InlineKeyboardMarkup:
-    """מקלדת חזרה בלבד — משמשת בכל מצבי 'ממתין לקלט'."""
-    return InlineKeyboardMarkup([[back_button(callback_data, label)]])
+def kb_cancel(callback_data: str, label: str = "❌ ביטול") -> InlineKeyboardMarkup:
+    """מקלדת עם כפתור ביטול בלבד."""
+    return InlineKeyboardMarkup([[cancel_button(callback_data, label)]])
 
 
 def kb_back_cancel(
@@ -59,6 +72,11 @@ def kb_back_cancel(
     back_label: str = "◀️ חזור",
     cancel_label: str = "❌ ביטול",
 ) -> InlineKeyboardMarkup:
+    """
+    מקלדת עם חזרה וביטול.
+
+    אם cancel_cb לא נמסר — משתמש ב-back_cb גם לביטול.
+    """
     cancel_cb = cancel_cb or back_cb
     return InlineKeyboardMarkup([
         [back_button(back_cb, back_label), cancel_button(cancel_cb, cancel_label)],
@@ -69,12 +87,23 @@ def kb_confirm_delete(
     confirm_cb: str,
     cancel_cb: str,
     confirm_label: str = "✅ כן, מחק",
-    cancel_label: str = "◀️ חזור",
+    cancel_label: str = "❌ ביטול",
 ) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        confirm_button(confirm_cb, confirm_label),
-        cancel_button(cancel_cb, cancel_label),
-    ]])
+    """
+    דיאלוג אישור מחיקה גנרי.
+
+    Parameters:
+        confirm_cb:    callback_data לאישור המחיקה.
+        cancel_cb:     callback_data לביטול.
+        confirm_label: תווית לכפתור האישור.
+        cancel_label:  תווית לכפתור הביטול.
+    """
+    return InlineKeyboardMarkup([
+        [
+            confirm_button(confirm_cb, confirm_label),
+            cancel_button(cancel_cb, cancel_label),
+        ]
+    ])
 
 
 def kb_toggle_delete(
@@ -82,28 +111,59 @@ def kb_toggle_delete(
     delete_cb: str,
     is_active: bool,
     active_label: str = "🔴 השבת",
-    inactive_label: str = "🟢 הפעל",
+    inactive_label: str = "🟢 הצג",
 ) -> list[InlineKeyboardButton]:
-    """שורת הפעלה/כיבוי + מחיקה — מחזיר שורה בודדת."""
+    """
+    שורה עם כפתורי הפעלה/כיבוי + מחיקה.
+
+    מחזיר list[InlineKeyboardButton] (שורה) — הוסף לרשימת הrows.
+    """
+    toggle_label = active_label if is_active else inactive_label
     return [
-        InlineKeyboardButton(active_label if is_active else inactive_label, callback_data=toggle_cb),
+        InlineKeyboardButton(toggle_label, callback_data=toggle_cb),
         delete_button(delete_cb),
     ]
 
 
-def kb_move_row(up_cb: str, down_cb: str) -> list[InlineKeyboardButton]:
-    """שורת סדר — תוויות מפורשות למניעת בלבול."""
-    return [
-        InlineKeyboardButton("⬆️ למעלה", callback_data=up_cb),
-        InlineKeyboardButton("⬇️ למטה",  callback_data=down_cb),
-    ]
+def kb_move_row(
+    up_cb: str,
+    down_cb: str,
+    left_cb: Optional[str] = None,
+    right_cb: Optional[str] = None,
+) -> list[InlineKeyboardButton]:
+    """
+    שורה עם כפתורי הזזה.
+
+    up_cb / down_cb    — חובה: מעביר לשורה מעל/מתחת (שינוי row_index).
+    left_cb / right_cb — אופציונלי: מחליף עם שכן שמאל/ימין באותה שורה
+                         (swap sort_order בתוך row_index).
+
+    סדר הכפתורים בשורה (כשכולם נמסרים): ⬅️ ⬆️ ⬇️ ➡️
+
+    מחזיר list[InlineKeyboardButton] — הוסף לרשימת הrows.
+    """
+    row: list[InlineKeyboardButton] = []
+    if left_cb:
+        row.append(InlineKeyboardButton("⬅️", callback_data=left_cb))
+    row.append(InlineKeyboardButton("⬆️", callback_data=up_cb))
+    row.append(InlineKeyboardButton("⬇️", callback_data=down_cb))
+    if right_cb:
+        row.append(InlineKeyboardButton("➡️", callback_data=right_cb))
+    return row
 
 
 # ---------------------------------------------------------------------------
-# עזרי handler
+# עזרי handler — שגרות חוזרות
 # ---------------------------------------------------------------------------
 
 async def answer_query(update: Update, text: str = "", alert: bool = False) -> None:
+    """
+    סוגר callback query בשקט.
+
+    Parameters:
+        text:  הודעת toast (אופציונלי).
+        alert: אם True — מוצג כ-alert popup.
+    """
     if update.callback_query:
         try:
             await update.callback_query.answer(text, show_alert=alert)
@@ -119,10 +179,9 @@ async def edit_or_send(
     parse_mode: str = "HTML",
 ) -> None:
     """
-    עורך הודעה קיימת כשאפשר — ושולח חדשה כשהעריכה נכשלת.
+    עורך את ההודעה הקיימת (callback query) או שולח חדשה (command / message).
 
-    כשהעריכה נכשלת (למשל הודעת מדיה קודמת): מוחק תחילה, שולח אחר-כך.
-    כך לא מצטברות הודעות בצ'אט בשום מצב.
+    שימושי בכניסה ל-handler שיכולה לבוא גם כ-/command וגם כ-callback.
     """
     if update.callback_query:
         try:
@@ -131,7 +190,7 @@ async def edit_or_send(
             )
             return
         except Exception:
-            await safe_delete_message(update)   # מחק לפני שליחה חדשה
+            pass  # אם העריכה נכשלת — שולח הודעה חדשה
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -142,9 +201,9 @@ async def edit_or_send(
 
 
 async def safe_delete_message(update: Update) -> None:
-    """מוחק את ההודעה הנוכחית בשקט."""
+    """מוחק את ההודעה הנוכחית בשקט (ללא חריגה אם נכשל)."""
     if update.callback_query:
         try:
-            await update.callback_query.message.delete()
+            await update.callback_query.delete_message()
         except Exception:
             pass
