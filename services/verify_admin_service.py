@@ -158,6 +158,7 @@ def get_verification_stats():
     
 def get_verification_index(verifications, verification_id):
     for index, verify in enumerate(verifications):
-     if verify["id"] == verification_id:
-      return index
-      return -1
+        if verify["id"] == verification_id:
+            return index
+
+    return -1
