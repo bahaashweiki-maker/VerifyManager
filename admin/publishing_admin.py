@@ -479,6 +479,7 @@ def build_publishing_handler(
                 is_active=bool(page["is_active"]),
                 has_children=bool(children),
                 parent_id=page["parent_id"],
+                page_type=page["page_type"],
             ),
             parse_mode="HTML",
         )
@@ -499,6 +500,7 @@ def build_publishing_handler(
                 is_active=bool(page["is_active"]),
                 has_children=bool(children),
                 parent_id=page["parent_id"],
+                page_type=page["page_type"],
             ),
             parse_mode="HTML",
         )
