@@ -70,6 +70,21 @@ def get_verification_by_id(verification_id):
         return cursor.fetchone()
 
 
+def get_latest_verification_by_telegram_id(telegram_id):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT *
+            FROM verifications
+            WHERE telegram_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (telegram_id,))
+
+        return cursor.fetchone()
+
+
 # ======================================
 # אישור אימות
 # ======================================
