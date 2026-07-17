@@ -146,8 +146,34 @@ def pub_update_page_title(page_id: int, title: str) -> bool:
     return _update_page_field(page_id, "title", title)
 
 
-def pub_update_page_image(page_id: int, file_id: Optional[str], media_type: str = "photo") -> bool:
-    """עדכון מדיית עמוד (file_id טלגרם, או None לניקוי) וסוג המדיה."""
+def pub_update_page_media(
+    page_id: int,
+    file_id: Optional[str],
+    media_type: str = "photo",
+) -> bool:
+    """
+    עדכון מדיה של עמוד — מעדכן image_file_id ו-media_type בטרנזקציה אחת.
+
+    Parameters:
+        page_id:    מזהה העמוד.
+        file_id:    file_id של המדיה מטלגרם, או None לניקוי.
+        media_type: סוג המדיה — 'photo' | 'video' | 'animation' | 'audio' |
+                    'voice' | 'document' | 'video_note' | 'sticker'.
+                    ברירת מחדל: 'photo'.
+
+    Returns:
+        True אם עודכן, False בכשל.
+    """
+    _VALID_MEDIA_TYPES = {
+        "photo", "video", "animation", "audio",
+        "voice", "document", "video_note", "sticker",
+    }
+    if media_type not in _VALID_MEDIA_TYPES:
+        logger.warning(
+            "pub_update_page_media: unknown media_type '%s', defaulting to 'photo'",
+            media_type,
+        )
+        media_type = "photo"
     try:
         with get_connection() as conn:
             cur = conn.execute(
@@ -159,11 +185,22 @@ def pub_update_page_image(page_id: int, file_id: Optional[str], media_type: str 
             conn.commit()
             ok = cur.rowcount > 0
         if not ok:
-            logger.warning("pub_update_page_image: id=%d not found", page_id)
+            logger.warning("pub_update_page_media: id=%d not found", page_id)
         return ok
     except sqlite3.Error as exc:
-        logger.error("pub_update_page_image(id=%d) failed: %s", page_id, exc, exc_info=True)
+        logger.error(
+            "pub_update_page_media(id=%d) failed: %s", page_id, exc, exc_info=True
+        )
         return False
+
+
+def pub_update_page_image(page_id: int, file_id: Optional[str]) -> bool:
+    """
+    עדכון תמונת עמוד (תאימות לאחור).
+
+    Wrapper ל-pub_update_page_media עם media_type='photo'.
+    """
+    return pub_update_page_media(page_id, file_id, media_type="photo")
 
 
 def pub_update_page_text(page_id: int, text: Optional[str]) -> bool:

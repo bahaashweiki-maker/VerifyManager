@@ -106,7 +106,7 @@ def pub_create_button(
         home_id:        1 אם שייך לדף הבית, None אחרת.
         page_id:        מזהה עמוד אם שייך לעמוד, None אחרת.
         target_page_id: לכפתורי page_link — מזהה עמוד היעד.
-        row_index:      שורה ויזואלית — None = שורה חדשה בסוף, int = שורה קיימת.
+        row_index:      שורה להוסיף אליה. None = שורה חדשה אחרי האחרונה.
 
     Returns:
         id הכפתור החדש, או -1 בכשל.
@@ -116,40 +116,30 @@ def pub_create_button(
             owner_col = "home_id" if home_id is not None else "page_id"
             owner_val = home_id   if home_id is not None else page_id
 
+            # sort_order = מקסימום קיים + 1 עבור אותו owner
+            row = conn.execute(
+                f"SELECT COALESCE(MAX(sort_order), -1) FROM publishing_buttons WHERE {owner_col} = ?",
+                (owner_val,),
+            ).fetchone()
+            next_order = (row[0] + 1) if row else 0
+
+            # row_index: אם לא נמסר — שורה חדשה אחרי האחרונה
             if row_index is None:
-                # שורה חדשה: row_index = מקסימום קיים + 1
-                r = conn.execute(
-                    f"SELECT COALESCE(MAX(row_index), -1)"
-                    f" FROM publishing_buttons WHERE {owner_col} = ?",
+                ri_row = conn.execute(
+                    f"SELECT COALESCE(MAX(row_index), -1) FROM publishing_buttons WHERE {owner_col} = ?",
                     (owner_val,),
                 ).fetchone()
-                row_index = (r[0] + 1) if r else 0
-                # כפתור ראשון בשורה — sort_order = 0
-                sort_order = 0
-            else:
-                # שורה קיימת: sort_order = מקסימום בשורה + 1
-                r = conn.execute(
-                    f"SELECT COALESCE(MAX(sort_order), -1)"
-                    f" FROM publishing_buttons"
-                    f" WHERE {owner_col} = ? AND row_index = ?",
-                    (owner_val, row_index),
-                ).fetchone()
-                sort_order = (r[0] + 1) if r else 0
+                row_index = (ri_row[0] + 1) if ri_row else 0
 
             cur = conn.execute(
                 "INSERT INTO publishing_buttons"
-                " (label, button_type, value, home_id, page_id, target_page_id,"
-                "  sort_order, row_index)"
+                " (label, button_type, value, home_id, page_id, target_page_id, sort_order, row_index)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (label, button_type, value, home_id, page_id, target_page_id,
-                 sort_order, row_index),
+                (label, button_type, value, home_id, page_id, target_page_id, next_order, row_index),
             )
             conn.commit()
             new_id: int = cur.lastrowid  # type: ignore[assignment]
-        logger.info(
-            "pub_create_button: created id=%d label='%s' row_index=%d sort_order=%d",
-            new_id, label, row_index, sort_order,
-        )
+        logger.info("pub_create_button: created id=%d label='%s'", new_id, label)
         return new_id
     except sqlite3.Error as exc:
         logger.error("pub_create_button failed: %s", exc, exc_info=True)
@@ -208,21 +198,13 @@ def pub_move_button_down(btn_id: int) -> bool:
 
 
 def pub_move_button_left(btn_id: int) -> bool:
-    """
-    מחליף עם השכן השמאלי באותה שורה (sort_order קטן יותר, row_index זהה).
-
-    ⬅️ — swap sort_order בתוך row_index, שכן עם sort_order קטן יותר.
-    """
-    return _swap_within_row(btn_id, direction="left")
+    """מחליף sort_order עם השכן השמאלי באותה שורה (sort_order קטן יותר, row_index זהה)."""
+    return _swap_btn_in_row(btn_id, direction="left")
 
 
 def pub_move_button_right(btn_id: int) -> bool:
-    """
-    מחליף עם השכן הימיני באותה שורה (sort_order גדול יותר, row_index זהה).
-
-    ➡️ — swap sort_order בתוך row_index, שכן עם sort_order גדול יותר.
-    """
-    return _swap_within_row(btn_id, direction="right")
+    """מחליף sort_order עם השכן הימני באותה שורה (sort_order גדול יותר, row_index זהה)."""
+    return _swap_btn_in_row(btn_id, direction="right")
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +306,53 @@ def _update_btn_field(btn_id: int, field: str, value: object) -> bool:
         return False
 
 
+def _swap_btn_in_row(btn_id: int, direction: str) -> bool:
+    """מחליף sort_order עם שכן באותה שורה (row_index זהה). left=קטן יותר, right=גדול יותר."""
+    try:
+        with get_connection() as conn:
+            btn = conn.execute(
+                "SELECT sort_order, row_index, home_id, page_id"
+                " FROM publishing_buttons WHERE id = ?",
+                (btn_id,),
+            ).fetchone()
+            if btn is None:
+                return False
+
+            current   = btn["sort_order"]
+            row_index = btn["row_index"]
+            home_id   = btn["home_id"]
+            page_id   = btn["page_id"]
+            owner_col = "home_id" if home_id is not None else "page_id"
+            owner_val = home_id   if home_id is not None else page_id
+
+            op      = "<" if direction == "left" else ">"
+            ord_dir = "DESC" if direction == "left" else "ASC"
+
+            neighbour = conn.execute(
+                f"SELECT id, sort_order FROM publishing_buttons"
+                f" WHERE {owner_col} = ? AND row_index = ? AND sort_order {op} ?"
+                f" ORDER BY sort_order {ord_dir} LIMIT 1",
+                (owner_val, row_index, current),
+            ).fetchone()
+
+            if neighbour is None:
+                return False
+
+            conn.execute(
+                "UPDATE publishing_buttons SET sort_order = ? WHERE id = ?",
+                (neighbour["sort_order"], btn_id),
+            )
+            conn.execute(
+                "UPDATE publishing_buttons SET sort_order = ? WHERE id = ?",
+                (current, neighbour["id"]),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("_swap_btn_in_row(%d, %s) failed: %s", btn_id, direction, exc, exc_info=True)
+        return False
+
+
 def _swap_btn_order(btn_id: int, direction: str) -> bool:
     """מחליף sort_order עם השכן (up=קטן יותר, down=גדול יותר)."""
     try:
@@ -341,7 +370,7 @@ def _swap_btn_order(btn_id: int, direction: str) -> bool:
             owner_col = "home_id" if home_id is not None else "page_id"
             owner_val = home_id   if home_id is not None else page_id
 
-            op      = "<" if direction == "up" else ">"
+            op  = "<" if direction == "up" else ">"
             ord_dir = "DESC" if direction == "up" else "ASC"
 
             neighbour = conn.execute(
@@ -366,58 +395,4 @@ def _swap_btn_order(btn_id: int, direction: str) -> bool:
         return True
     except sqlite3.Error as exc:
         logger.error("_swap_btn_order(%d, %s) failed: %s", btn_id, direction, exc, exc_info=True)
-        return False
-
-
-def _swap_within_row(btn_id: int, direction: str) -> bool:
-    """
-    מחליף sort_order עם השכן שמאל/ימין בתוך אותה שורה (row_index זהה).
-
-    direction='left'  — שכן עם sort_order קטן יותר (אותו row_index).
-    direction='right' — שכן עם sort_order גדול יותר (אותו row_index).
-    """
-    try:
-        with get_connection() as conn:
-            btn = conn.execute(
-                "SELECT sort_order, row_index, home_id, page_id"
-                " FROM publishing_buttons WHERE id = ?",
-                (btn_id,),
-            ).fetchone()
-            if btn is None:
-                return False
-
-            current_order = btn["sort_order"]
-            row_index     = btn["row_index"]
-            home_id       = btn["home_id"]
-            page_id       = btn["page_id"]
-            owner_col     = "home_id" if home_id is not None else "page_id"
-            owner_val     = home_id   if home_id is not None else page_id
-
-            op      = "<" if direction == "left" else ">"
-            ord_dir = "DESC" if direction == "left" else "ASC"
-
-            neighbour = conn.execute(
-                f"SELECT id, sort_order FROM publishing_buttons"
-                f" WHERE {owner_col} = ? AND row_index = ? AND sort_order {op} ?"
-                f" ORDER BY sort_order {ord_dir} LIMIT 1",
-                (owner_val, row_index, current_order),
-            ).fetchone()
-
-            if neighbour is None:
-                return False  # כבר בקצה השורה
-
-            conn.execute(
-                "UPDATE publishing_buttons SET sort_order = ? WHERE id = ?",
-                (neighbour["sort_order"], btn_id),
-            )
-            conn.execute(
-                "UPDATE publishing_buttons SET sort_order = ? WHERE id = ?",
-                (current_order, neighbour["id"]),
-            )
-            conn.commit()
-        return True
-    except sqlite3.Error as exc:
-        logger.error(
-            "_swap_within_row(%d, %s) failed: %s", btn_id, direction, exc, exc_info=True
-        )
         return False

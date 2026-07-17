@@ -39,21 +39,30 @@ def get_home() -> Optional[sqlite3.Row]:
 
 
 # ---------------------------------------------------------------------------
-# עדכון שדות
+# עדכון מדיה
 # ---------------------------------------------------------------------------
 
-def set_home_image(file_id: Optional[str], media_type: str = "photo") -> bool:
+def set_home_media(file_id: Optional[str], media_type: str = "photo") -> bool:
     """
-    מעדכן את image_file_id ואת media_type של דף הבית.
+    מעדכן את image_file_id ואת media_type של דף הבית בטרנזקציה אחת.
 
     Parameters:
-        file_id:    file_id של מדיה מטלגרם, או None לניקוי.
-        media_type: סוג המדיה ("photo", "video", "animation", "audio",
-                    "voice", "document", "video_note", "sticker").
+        file_id:    file_id של המדיה מטלגרם, או None לניקוי.
+        media_type: סוג המדיה — 'photo' | 'animation' | 'video'.
+                    ברירת מחדל: 'photo'.
 
     Returns:
         True אם עודכן, False בשגיאה.
     """
+    _VALID_MEDIA_TYPES = {
+        "photo", "video", "animation", "audio",
+        "voice", "document", "video_note", "sticker",
+    }
+    if media_type not in _VALID_MEDIA_TYPES:
+        logger.warning(
+            "set_home_media: unknown media_type '%s', defaulting to 'photo'", media_type
+        )
+        media_type = "photo"
     try:
         with get_connection() as conn:
             cur = conn.execute(
@@ -65,12 +74,31 @@ def set_home_image(file_id: Optional[str], media_type: str = "photo") -> bool:
             conn.commit()
             updated = cur.rowcount > 0
         if not updated:
-            logger.warning("set_home_image: singleton row (id=1) not found")
+            logger.warning("set_home_media: singleton row (id=1) not found")
         return updated
     except sqlite3.Error as exc:
-        logger.error("set_home_image failed: %s", exc, exc_info=True)
+        logger.error("set_home_media failed: %s", exc, exc_info=True)
         return False
 
+
+def set_home_image(file_id: Optional[str]) -> bool:
+    """
+    מעדכן את image_file_id של דף הבית (תאימות לאחור).
+
+    Wrapper ל-set_home_media עם media_type='photo'.
+
+    Parameters:
+        file_id: file_id של תמונה מטלגרם, או None לניקוי.
+
+    Returns:
+        True אם עודכן, False בשגיאה.
+    """
+    return set_home_media(file_id, media_type="photo")
+
+
+# ---------------------------------------------------------------------------
+# עדכון טקסט
+# ---------------------------------------------------------------------------
 
 def set_home_text(text: Optional[str]) -> bool:
     """
@@ -84,6 +112,10 @@ def set_home_text(text: Optional[str]) -> bool:
     """
     return _update_home_field("text", text)
 
+
+# ---------------------------------------------------------------------------
+# הפעלה / כיבוי
+# ---------------------------------------------------------------------------
 
 def set_home_active(is_active: bool) -> bool:
     """

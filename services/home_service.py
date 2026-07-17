@@ -14,7 +14,8 @@ import sqlite3
 
 from repositories.home_repository import (
     get_home,
-    set_home_image,
+    set_home_media,
+    set_home_image,   # נשמר לייבוא — wrapper בrepository
     set_home_text,
     set_home_active,
 )
@@ -37,35 +38,69 @@ def get_home_data() -> Optional[sqlite3.Row]:
 
 
 # ---------------------------------------------------------------------------
-# עדכון תמונה
+# עדכון מדיה
 # ---------------------------------------------------------------------------
 
-def update_home_image(file_id: Optional[str], media_type: str = "photo") -> bool:
+def update_home_media(file_id: Optional[str], media_type: str = "photo") -> bool:
     """
-    מעדכן את מדיית דף הבית.
+    מעדכן את מדיית דף הבית (תמונה / GIF / וידאו).
 
     Parameters:
-        file_id:    ה-file_id מטלגרם (str), או None לניקוי המדיה.
-        media_type: סוג המדיה ("photo", "video", "animation", "audio",
-                    "voice", "document", "video_note", "sticker").
+        file_id:    ה-file_id מטלגרם, או None לניקוי.
+        media_type: 'photo' | 'animation' | 'video'. ברירת מחדל: 'photo'.
 
     Returns:
         True אם הצליח, False בכשל.
     """
-    ok = set_home_image(file_id, media_type)
+    ok = set_home_media(file_id, media_type)
     if ok:
-        logger.info("Home image updated: %s (type=%s)", file_id or "cleared", media_type)
+        logger.info(
+            "Home media updated: file_id=%s media_type=%s",
+            file_id or "cleared",
+            media_type,
+        )
     return ok
+
+
+def clear_home_media() -> bool:
+    """
+    מנקה את מדיית דף הבית (מאפס image_file_id, media_type חוזר ל-'photo').
+
+    Returns:
+        True אם הצליח, False בכשל.
+    """
+    return update_home_media(None, "photo")
+
+
+# ---------------------------------------------------------------------------
+# תאימות לאחור — wrappers לקוד ישן
+# ---------------------------------------------------------------------------
+
+def update_home_image(file_id: Optional[str]) -> bool:
+    """
+    מעדכן את תמונת דף הבית (תאימות לאחור).
+
+    Wrapper ל-update_home_media עם media_type='photo'.
+
+    Parameters:
+        file_id: ה-file_id מטלגרם (str), או None לניקוי התמונה.
+
+    Returns:
+        True אם הצליח, False בכשל.
+    """
+    return update_home_media(file_id, "photo")
 
 
 def clear_home_image() -> bool:
     """
-    מנקה את תמונת דף הבית.
+    מנקה את תמונת דף הבית (תאימות לאחור).
+
+    Wrapper ל-clear_home_media.
 
     Returns:
         True אם הצליח, False בכשל.
     """
-    return update_home_image(None)
+    return clear_home_media()
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +161,7 @@ def toggle_home_active() -> Optional[bool]:
 
 def home_is_publishable() -> tuple[bool, list[str]]:
     """
-    בודק אם דף הבית ניתן לפרסום (יש לו לפחות תמונה או טקסט).
+    בודק אם דף הבית ניתן לפרסום (יש לו לפחות מדיה או טקסט).
 
     Returns:
         (is_ok, list_of_warnings)
@@ -139,6 +174,6 @@ def home_is_publishable() -> tuple[bool, list[str]]:
 
     warnings: list[str] = []
     if not home["image_file_id"] and not home["text"]:
-        warnings.append("דף הבית ריק — הוסף תמונה או טקסט")
+        warnings.append("דף הבית ריק — הוסף מדיה או טקסט")
 
     return len(warnings) == 0, warnings
