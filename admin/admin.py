@@ -1,35 +1,47 @@
+"""
+admin/admin.py
+─────────────────────────────────────────────────────────────────────────────
+פאנל ניהול ראשי — VerifyManager
+
+ADMIN_ID מיובא מ-config/constants.py (לא מוגדר כאן) כדי למנוע Circular Import.
+─────────────────────────────────────────────────────────────────────────────
+"""
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-# החלף ל-ID שלך
-ADMIN_ID = 1751674910
+from config.constants import ADMIN_ID
+from services.admin_service import is_super_admin
+from services.permission_service import has_permission
 
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
+    uid  = user.id
 
-    if user.id != ADMIN_ID:
+    if not is_super_admin(uid) and not has_permission(uid, "admin"):
         if update.callback_query:
-            await update.callback_query.answer(
-                "⛔ אין לך הרשאה.",
-                show_alert=True
-            )
+            await update.callback_query.answer("⛔ אין לך הרשאה.", show_alert=True)
         else:
-            await update.message.reply_text(
-                "⛔ אין לך הרשאה להיכנס למערכת הניהול."
-            )
+            await update.message.reply_text("⛔ אין לך הרשאה להיכנס למערכת הניהול.")
         return
 
-    keyboard = InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("🪪 מערכת אימותים",  callback_data="ADMIN_VERIFY")],
-        [InlineKeyboardButton("📋 ניהול פרסומים",   callback_data="pub:main")],
+    ]
+    if is_super_admin(uid):
+        rows.append([InlineKeyboardButton("👑 ניהול מנהלים", callback_data="ADMIN_MANAGERS")])
+    rows += [
+        [InlineKeyboardButton("📋 ניהול פרסומים",  callback_data="pub:main")],
         [InlineKeyboardButton("📢 פרסומים",         callback_data="ADMIN_BROADCAST")],
         [InlineKeyboardButton("👥 משתמשים",         callback_data="ADMIN_USERS")],
         [InlineKeyboardButton("📊 סטטיסטיקות",      callback_data="ADMIN_STATISTICS")],
-        [InlineKeyboardButton("⚙️ הגדרות",           callback_data="ADMIN_SETTINGS")],
-        [InlineKeyboardButton("🚪 יציאה",            callback_data="pub:user:home")],
-    ])
+        [InlineKeyboardButton("⚙️ הגדרות",          callback_data="ADMIN_SETTINGS")],
+        [InlineKeyboardButton("🚪 יציאה",           callback_data="pub:user:home")],
+    ]
+
+    keyboard = InlineKeyboardMarkup(rows)
 
     text = (
         "👨‍💼 <b>מערכת ניהול</b>\n\n"
@@ -37,27 +49,21 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "בחר את המערכת שברצונך לנהל:"
     )
 
-    # תמיד delete + send — עקבי עם publishing_renderer ומונע קריסה
-    # כשההודעה הקודמת הייתה תמונה (edit_message_text נכשל על הודעות מדיה).
     if update.callback_query:
-        try:
-            await update.callback_query.message.delete()
-        except Exception:
-            pass
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=keyboard,
             parse_mode="HTML",
         )
-    else:
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        return
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text(
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )

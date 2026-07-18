@@ -19,10 +19,11 @@ from services.verify_service import (
 from app.engine.page_engine import PageEngine
 from app.engine.publishing_renderer import render_home, handle_user_nav
 
-from admin.admin import admin_panel, ADMIN_ID
+from admin.admin import admin_panel
 from admin.verify_admin import verify_admin_menu
 from admin.verify_media import verify_media_menu
 from admin.publishing_admin import build_publishing_handler
+from admin.admin_manager import admin_manager_route, handle_admin_mgr_input
 
 from database.publishing_models import init_publishing_db
 from database.permission_models import init_permissions_db
@@ -30,34 +31,23 @@ from services.admin_service import is_super_admin
 from services.permission_service import has_permission
 
 
-# ─────────────────────────────────────────
-# /start — תמיד דרך Publishing Module
-# ─────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_home(context.bot, update.effective_chat.id)
 
 
-# ─────────────────────────────────────────
-# /admin
-# ─────────────────────────────────────────
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await admin_panel(update, context)
 
 
-# ─────────────────────────────────────────
-# כל הכפתורים
-# ─────────────────────────────────────────
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data  = query.data
 
-    # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):
         return await handle_user_nav(update, context)
 
     await query.answer()
 
-    # 2. מדיה של אימותים
     if data.startswith("VIEW_"):
         return await verify_media_menu(update, context)
 
@@ -67,14 +57,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return await verify_admin_menu(update, context)
 
-    # 3. התחלת אימות
     if data == "START_VERIFY":
         return await start_verify(update, context)
 
-    # 4. ביטול אימות
     if data == "CANCEL_VERIFY":
-        # cancel_verify פנימית קוראת PageEngine.show_page("HOME") שמציג את הבית הישן.
-        # במקום זאת: מנקים state, מוחקים הודעה נוכחית, ומציגים את בית הפרסומים החדש.
         context.user_data.clear()
         try:
             await query.message.delete()
@@ -83,7 +69,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render_home(context.bot, query.message.chat_id)
         return
 
-    # 5. מערכת האימותים — מנהל
     if (
         data in (
             "ADMIN_VERIFY",
@@ -106,8 +91,28 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return await verify_admin_menu(update, context)
 
-    # 6. HOME — דרך Publishing Module בלבד
-    #    (תואם כפתורים ישנים שעדיין שולחים callback_data="HOME")
+    if data == "ADMIN_PANEL":
+        if not is_super_admin(query.from_user.id) and not has_permission(query.from_user.id, "admin"):
+            await query.answer("⛔ אין לך הרשאה.", show_alert=True)
+            return
+        return await admin_panel(update, context)
+
+    if (
+        data == "ADMIN_MANAGERS"
+        or data == "ADMIN_MGR_ADD"
+        or data == "ADMIN_MGR_LIST"
+        or data == "ADMIN_MGR_CANCEL"
+        or data.startswith("ADMIN_MGR_VIEW_")
+        or data.startswith("ADMIN_MGR_PERMS_")
+        or data.startswith("ADMIN_MGR_TOGGLE_")
+        or data.startswith("ADMIN_MGR_DEMOTE_")
+        or data.startswith("ADMIN_MGR_CONFIRM_")
+    ):
+        if not is_super_admin(query.from_user.id):
+            await query.answer("⛔ רק הסופר-אדמין יכול לנהל מנהלים.", show_alert=True)
+            return
+        return await admin_manager_route(update, context)
+
     if data == "HOME":
         try:
             await query.message.delete()
@@ -116,15 +121,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render_home(context.bot, query.message.chat_id)
         return
 
-    # 7. pub:* שלא נתפס ע"י ConversationHandler (group=-1) — בלע בשקט
     if data.startswith("pub:"):
         return
 
-    # 8. IGNORE
     if data == "IGNORE":
         return
 
-    # 9. דפים רגילים (PageEngine) — כל שאר ה-callbacks
     try:
         await query.message.delete()
     except Exception:
@@ -132,26 +134,24 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await PageEngine.show_page(update, context, data)
 
 
-# ─────────────────────────────────────────
-# מדיה / טקסט נכנסים
-# ─────────────────────────────────────────
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("admin_mgr_state") and update.message and update.message.text:
+        return await handle_admin_mgr_input(update, context)
     await process_verify(update, context)
 
 
-# ─────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────
 def main():
     init_publishing_db()
     init_permissions_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Publishing ConversationHandler — group=-1 מבטיח קליטה לפני button_click
     app.add_handler(
         build_publishing_handler(
-            is_admin_fn=lambda u: u.effective_user.id == ADMIN_ID
+            is_admin_fn=lambda u: (
+                is_super_admin(u.effective_user.id)
+                or has_permission(u.effective_user.id, "admin")
+            )
         ),
         group=-1,
     )

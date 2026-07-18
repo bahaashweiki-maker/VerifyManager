@@ -10,16 +10,13 @@ database/permission_models.py
 
 שימוש בהפעלה:
     from database.permission_models import init_permissions_db
-    ...
-    create_tables()
-    init_publishing_db()
-    init_permissions_db()   ← הוסף בדיוק כאן, אחרי שאר האתחולים
+    init_permissions_db()
 
 הטבלה:
     user_permissions
     ├── id          — מזהה ייחודי פנימי
     ├── telegram_id — מזהה הטלגרם של המשתמש
-    ├── permission  — מחרוזת חופשית כלשהי ("catalog.vip", "channel.123", ...)
+    ├── permission  — מחרוזת חופשית כלשהי ("admin", "verify.review", ...)
     ├── granted_by  — telegram_id של מי שנתן את ההרשאה (אופציונלי)
     └── granted_at  — תאריך ושעת המתן
 
@@ -40,11 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 _SCHEMA_SQL = """
--- ─────────────────────────────────────────────────────────────────────────
--- user_permissions
--- מקשרת בין telegram_id לרשימת הרשאות בלתי מוגבלת.
--- UNIQUE(telegram_id, permission) מבטיחה שאותה הרשאה לא תירשם פעמיים.
--- ─────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS user_permissions (
     id          INTEGER   PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER   NOT NULL,
@@ -69,7 +61,7 @@ def init_permissions_db() -> bool:
     בטוח לקריאה חוזרת בכל הפעלה (idempotent).
 
     Returns:
-        True אם הצליח, False אם נכשל (תרשם שגיאה ב-log).
+        True אם הצליח, False אם נכשל.
     """
     try:
         with get_connection() as conn:
