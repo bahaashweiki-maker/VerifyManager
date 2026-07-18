@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config.permissions import PERMISSIONS
@@ -233,7 +233,7 @@ async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def _show_permissions_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data      = update.callback_query.data
     target_id = int(data[len("ADMIN_MGR_PERMS_"):])
-    await _render_permissions_screen(update.callback_query, target_id)
+    await _render_permissions_screen(update.callback_query, target_id, context.bot)
 
 
 async def _toggle_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -254,10 +254,29 @@ async def _toggle_permission(update: Update, context: ContextTypes.DEFAULT_TYPE)
         grant_admin_permission(target_id, perm_key, granted_by=caller_id)
         await update.callback_query.answer(f"✅ הופעלה: {perm_key}")
 
-    await _render_permissions_screen(update.callback_query, target_id)
+    await _render_permissions_screen(update.callback_query, target_id, context.bot)
 
 
-async def _render_permissions_screen(query: CallbackQuery, target_id: int) -> None:
+async def _render_permissions_screen(
+    query: CallbackQuery,
+    target_id: int,
+    bot: Bot | None = None,
+) -> None:
+    # שליפת פרטי המשתמש מטלגרם (שם + username)
+    header   = f"🆔 <code>{target_id}</code>"
+    username = None
+
+    if bot:
+        try:
+            chat = await bot.get_chat(target_id)
+            header = f"👤 {chat.first_name}"
+            if chat.username:
+                username = chat.username
+                header += f"\n📛 @{chat.username}"
+            header += f"\n🆔 <code>{target_id}</code>"
+        except Exception:
+            pass  # אם הבקשה נכשלת — מוצג ID בלבד
+
     current_perms = set(get_admin_permissions(target_id))
 
     buttons = []
@@ -270,6 +289,12 @@ async def _render_permissions_screen(query: CallbackQuery, target_id: int) -> No
             callback_data=f"ADMIN_MGR_TOGGLE_{target_id}_{key}",
         )])
 
+    # כפתור יצירת קשר — מוצג רק אם קיים username
+    if username:
+        buttons.append([
+            InlineKeyboardButton("💬 צור קשר עם המנהל", url=f"https://t.me/{username}"),
+        ])
+
     buttons.append([
         InlineKeyboardButton("💾 שמור הרשאות", callback_data=f"ADMIN_MGR_VIEW_{target_id}"),
     ])
@@ -277,7 +302,7 @@ async def _render_permissions_screen(query: CallbackQuery, target_id: int) -> No
     await query.edit_message_text(
         text=(
             f"🔐 <b>ניהול הרשאות</b>\n"
-            f"Telegram ID: <code>{target_id}</code>\n\n"
+            f"{header}\n\n"
             f"✅ = הרשאה פעילה  |  ❌ = הרשאה כבויה\n"
             f"לחץ על הרשאה כדי להפעיל / לבטל.\n"
             f"<i>השינויים נשמרים מיד.</i>"
