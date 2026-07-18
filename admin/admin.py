@@ -1,25 +1,30 @@
 """
 admin/admin.py
 ─────────────────────────────────────────────────────────────────────────────
-פאנל ניהול ראשי — VerifyManager
+פאנל הניהול הראשי.
 
-ADMIN_ID מיובא מ-config/constants.py (לא מוגדר כאן) כדי למנוע Circular Import.
+הכפתורים נוצרים אוטומטית מ-config/permissions.py → ADMIN_MODULES.
+להוסיף מודול חדש: הוסף רשומה ל-ADMIN_MODULES בלבד — אין לגעת בקובץ זה.
 ─────────────────────────────────────────────────────────────────────────────
 """
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config.constants import ADMIN_ID
+from config.permissions import ADMIN_MODULES
 from services.admin_service import is_super_admin
 from services.permission_service import has_permission
 
+# מיוצא — נדרש ע"י admin_service
+ADMIN_ID = 1751674910
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user = update.effective_user
     uid  = user.id
 
+    # בדיקת הרשאת כניסה בסיסית
     if not is_super_admin(uid) and not has_permission(uid, "admin"):
         if update.callback_query:
             await update.callback_query.answer("⛔ אין לך הרשאה.", show_alert=True)
@@ -27,22 +32,24 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⛔ אין לך הרשאה להיכנס למערכת הניהול.")
         return
 
-    rows = [
-        [InlineKeyboardButton("🪪 מערכת אימותים",  callback_data="ADMIN_VERIFY")],
-    ]
-    if is_super_admin(uid):
+    is_super = is_super_admin(uid)
+
+    # ── בניית כפתורים אוטומטית מ-ADMIN_MODULES ───────────────────────────────
+    rows = []
+
+    # ניהול מנהלים — רק סופר-אדמין, תמיד ראשון
+    if is_super:
         rows.append([InlineKeyboardButton("👑 ניהול מנהלים", callback_data="ADMIN_MANAGERS")])
-    rows += [
-        [InlineKeyboardButton("📋 ניהול פרסומים",  callback_data="pub:main")],
-        [InlineKeyboardButton("📢 פרסומים",         callback_data="ADMIN_BROADCAST")],
-        [InlineKeyboardButton("👥 משתמשים",         callback_data="ADMIN_USERS")],
-        [InlineKeyboardButton("📊 סטטיסטיקות",      callback_data="ADMIN_STATISTICS")],
-        [InlineKeyboardButton("⚙️ הגדרות",          callback_data="ADMIN_SETTINGS")],
-        [InlineKeyboardButton("🚪 יציאה",           callback_data="pub:user:home")],
-    ]
+
+    # מודולים לפי הגדרה ב-config/permissions.py
+    for module in ADMIN_MODULES:
+        # is_super → גישה לכל. אחרת: מספיק הרשאה אחת מ-requires
+        if is_super or any(has_permission(uid, r) for r in module["requires"]):
+            rows.append([InlineKeyboardButton(module["label"], callback_data=module["callback"])])
+
+    rows.append([InlineKeyboardButton("🚪 יציאה", callback_data="pub:user:home")])
 
     keyboard = InlineKeyboardMarkup(rows)
-
     text = (
         "👨‍💼 <b>מערכת ניהול</b>\n\n"
         "ברוך הבא למערכת הניהול.\n\n"

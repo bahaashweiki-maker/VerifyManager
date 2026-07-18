@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Bot, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config.permissions import PERMISSIONS
@@ -44,6 +44,7 @@ from services.admin_service import (
 
 logger = logging.getLogger(__name__)
 
+# ─── מקשי מצב ────────────────────────────────────────────────────────────────
 _STATE        = "admin_mgr_state"
 _CHAT_ID      = "admin_mgr_chat_id"
 _MSG_ID       = "admin_mgr_msg_id"
@@ -52,34 +53,53 @@ _VIEWED_PERMS = "mgr_viewed_perms"
 _WAIT_ID = "WAITING_ADMIN_ID"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# נקודת כניסה מ-bot.py — מנתב לפי callback_data
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def admin_manager_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מנתב את כל ה-callbacks של מנהל המנהלים לפונקציה המתאימה."""
     query = update.callback_query
     data  = query.data
 
     if data == "ADMIN_MANAGERS":
         return await _show_main_menu(update, context)
+
     if data == "ADMIN_MGR_ADD":
         return await _prompt_add_admin(update, context)
+
     if data == "ADMIN_MGR_LIST":
         return await _show_admin_list(update, context)
+
     if data.startswith("ADMIN_MGR_VIEW_"):
         return await _show_admin_view(update, context)
+
     if data.startswith("ADMIN_MGR_PERMS_"):
         return await _show_permissions_screen(update, context)
+
     if data.startswith("ADMIN_MGR_TOGGLE_"):
         return await _toggle_permission(update, context)
+
     if data.startswith("ADMIN_MGR_DEMOTE_") and not data.startswith("ADMIN_MGR_CONFIRM_"):
         return await _confirm_demote(update, context)
+
     if data.startswith("ADMIN_MGR_CONFIRM_"):
         return await _execute_demote(update, context)
+
     if data == "ADMIN_MGR_CANCEL":
         return await _cancel_input(update, context)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# נקודת כניסה מ-media_handler — קלט טקסט בזמן המתנה
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def handle_admin_mgr_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מטפל בטקסט שהסופר-אדמין שולח בזמן המתנה לקלט."""
     state = context.user_data.get(_STATE, "")
     text  = (update.message.text or "").strip()
 
+    # מחיקת הודעת המשתמש
     try:
         await update.message.delete()
     except Exception:
@@ -88,6 +108,10 @@ async def handle_admin_mgr_input(update: Update, context: ContextTypes.DEFAULT_T
     if state == _WAIT_ID:
         await _process_add_admin(update, context, text)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# תפריט ראשי
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_state(context)
@@ -103,7 +127,12 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# הוספת מנהל — פרומפט + עיבוד
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _prompt_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מציג פרומפט לקלט Telegram ID של מנהל חדש."""
     query = update.callback_query
     context.user_data[_STATE]   = _WAIT_ID
     context.user_data[_CHAT_ID] = query.message.chat_id
@@ -126,6 +155,7 @@ async def _prompt_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def _process_add_admin(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
 ) -> None:
+    """מעבד Telegram ID שהתקבל ומוסיף מנהל."""
     chat_id = context.user_data.pop(_CHAT_ID, None)
     msg_id  = context.user_data.pop(_MSG_ID, None)
     context.user_data.pop(_STATE, None)
@@ -163,6 +193,10 @@ async def _process_add_admin(
     await _edit_stored(context, chat_id, msg_id, text=msg, keyboard=_back_to_managers_kb())
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# רשימת מנהלים
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _show_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_state(context)
     admins = get_all_admins()
@@ -194,6 +228,10 @@ async def _show_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# צפייה במנהל ספציפי
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_state(context)
     data      = update.callback_query.data
@@ -202,25 +240,28 @@ async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     context.user_data[_VIEWED_PERMS] = perms
 
+    # סיכום הרשאות לתצוגה — מציג רק הרשאות מנהל מוכרות (config/permissions.py)
+    # הרשאות user.* / catalog.* אינן הרשאות מנהל ולא מוצגות כאן
+    admin_perm_keys = {p["key"] for p in PERMISSIONS}
     perms_lines = []
     for p in perms:
-        label = next((x["label"] for x in PERMISSIONS if x["key"] == p), None)
-        if label:
-            perms_lines.append(f"  ✅ {label}")
-        else:
-            perms_lines.append(f"  ✅ <code>{p}</code>")
+        if p not in admin_perm_keys:
+            continue  # מסנן user.* / catalog.* שנכנסו למסד בטעות
+        label = next(x["label"] for x in PERMISSIONS if x["key"] == p)
+        perms_lines.append(f"  ✅ {label}")
 
-    perms_text = "\n".join(perms_lines) if perms_lines else "  <i>אין הרשאות</i>"
+    admin_count = len(perms_lines)
+    perms_text  = "\n".join(perms_lines) if perms_lines else "  <i>אין הרשאות מנהל</i>"
 
     text = (
         f"👤 <b>מנהל</b>: <code>{target_id}</code>\n\n"
-        f"<b>הרשאות ({len(perms)}):</b>\n{perms_text}"
+        f"<b>הרשאות ({admin_count}):</b>\n{perms_text}"
     )
 
     buttons = [
-        [InlineKeyboardButton("🔐 ניהול הרשאות", callback_data=f"ADMIN_MGR_PERMS_{target_id}")],
-        [InlineKeyboardButton("🚫 הורד ממנהל",   callback_data=f"ADMIN_MGR_DEMOTE_{target_id}")],
-        [InlineKeyboardButton("🔙 חזרה",         callback_data="ADMIN_MGR_LIST")],
+        [InlineKeyboardButton("🔐 ניהול הרשאות",  callback_data=f"ADMIN_MGR_PERMS_{target_id}")],
+        [InlineKeyboardButton("🚫 הורד ממנהל",    callback_data=f"ADMIN_MGR_DEMOTE_{target_id}")],
+        [InlineKeyboardButton("🔙 חזרה",          callback_data="ADMIN_MGR_LIST")],
     ]
 
     await update.callback_query.edit_message_text(
@@ -230,53 +271,25 @@ async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# מסך הרשאות גרפי — ✅/❌ לכל הרשאה
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _show_permissions_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    מציג את כל ההרשאות מ-config/permissions.py ככפתורי ✅/❌.
+    שינוי כל הרשאה נשמר מיידית בעת לחיצה.
+    כפתור "💾 שמור הרשאות" חוזר לתצוגת המנהל.
+    """
     data      = update.callback_query.data
     target_id = int(data[len("ADMIN_MGR_PERMS_"):])
-    await _render_permissions_screen(update.callback_query, target_id, context.bot)
-
-
-async def _toggle_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data   = update.callback_query.data
-    suffix = data[len("ADMIN_MGR_TOGGLE_"):]
-
-    sep_idx   = suffix.index("_")
-    target_id = int(suffix[:sep_idx])
-    perm_key  = suffix[sep_idx + 1:]
-
-    caller_id     = update.callback_query.from_user.id
-    current_perms = set(get_admin_permissions(target_id))
-
-    if perm_key in current_perms:
-        revoke_admin_permission(target_id, perm_key)
-        await update.callback_query.answer(f"❌ הוסרה: {perm_key}")
-    else:
-        grant_admin_permission(target_id, perm_key, granted_by=caller_id)
-        await update.callback_query.answer(f"✅ הופעלה: {perm_key}")
-
-    await _render_permissions_screen(update.callback_query, target_id, context.bot)
+    await _render_permissions_screen(update, context, target_id)
 
 
 async def _render_permissions_screen(
-    query: CallbackQuery,
-    target_id: int,
-    bot: Bot | None = None,
+    update: Update, context: ContextTypes.DEFAULT_TYPE, target_id: int
 ) -> None:
-    # שליפת פרטי המשתמש מטלגרם (שם + username)
-    header   = f"🆔 <code>{target_id}</code>"
-    username = None
-
-    if bot:
-        try:
-            chat = await bot.get_chat(target_id)
-            header = f"👤 {chat.first_name}"
-            if chat.username:
-                username = chat.username
-                header += f"\n📛 @{chat.username}"
-            header += f"\n🆔 <code>{target_id}</code>"
-        except Exception:
-            pass  # אם הבקשה נכשלת — מוצג ID בלבד
-
+    """רינדור מסך ההרשאות לפי target_id — נקרא ישירות (ללא תלות ב-query.data)."""
     current_perms = set(get_admin_permissions(target_id))
 
     buttons = []
@@ -289,20 +302,14 @@ async def _render_permissions_screen(
             callback_data=f"ADMIN_MGR_TOGGLE_{target_id}_{key}",
         )])
 
-    # כפתור יצירת קשר — מוצג רק אם קיים username
-    if username:
-        buttons.append([
-            InlineKeyboardButton("💬 צור קשר עם המנהל", url=f"https://t.me/{username}"),
-        ])
-
     buttons.append([
         InlineKeyboardButton("💾 שמור הרשאות", callback_data=f"ADMIN_MGR_VIEW_{target_id}"),
     ])
 
-    await query.edit_message_text(
+    await update.callback_query.edit_message_text(
         text=(
             f"🔐 <b>ניהול הרשאות</b>\n"
-            f"{header}\n\n"
+            f"Telegram ID: <code>{target_id}</code>\n\n"
             f"✅ = הרשאה פעילה  |  ❌ = הרשאה כבויה\n"
             f"לחץ על הרשאה כדי להפעיל / לבטל.\n"
             f"<i>השינויים נשמרים מיד.</i>"
@@ -312,13 +319,46 @@ async def _render_permissions_screen(
     )
 
 
+async def _toggle_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    מפעיל או מבטל הרשאה מיידית (grant/revoke בDB) ומרענן את המסך.
+    פורמט: ADMIN_MGR_TOGGLE_{id}_{key}
+    """
+    data   = update.callback_query.data
+    suffix = data[len("ADMIN_MGR_TOGGLE_"):]
+
+    # id הוא מספר; key הוא כל מה שאחרי ה-underscore הראשון
+    sep_idx   = suffix.index("_")
+    target_id = int(suffix[:sep_idx])
+    perm_key  = suffix[sep_idx + 1:]
+
+    caller_id = update.callback_query.from_user.id
+
+    current_perms = set(get_admin_permissions(target_id))
+
+    if perm_key in current_perms:
+        revoke_admin_permission(target_id, perm_key)
+        await update.callback_query.answer(f"❌ הוסרה: {perm_key}")
+    else:
+        grant_admin_permission(target_id, perm_key, granted_by=caller_id)
+        await update.callback_query.answer(f"✅ הופעלה: {perm_key}")
+
+    # רינדור מחדש ישיר — ללא שינוי query.data (read-only)
+    await _render_permissions_screen(update, context, target_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# הורדת מנהל
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _confirm_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מסך אישור הורדת מנהל."""
     data      = update.callback_query.data
     target_id = int(data[len("ADMIN_MGR_DEMOTE_"):])
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ כן, הורד מנהל", callback_data=f"ADMIN_MGR_CONFIRM_{target_id}")],
-        [InlineKeyboardButton("❌ ביטול",          callback_data=f"ADMIN_MGR_VIEW_{target_id}")],
+        [InlineKeyboardButton("✅ כן, הורד מנהל",   callback_data=f"ADMIN_MGR_CONFIRM_{target_id}")],
+        [InlineKeyboardButton("❌ ביטול",            callback_data=f"ADMIN_MGR_VIEW_{target_id}")],
     ])
     await update.callback_query.edit_message_text(
         text=(
@@ -333,6 +373,7 @@ async def _confirm_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _execute_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מבצע הורדת מנהל וסילוק כל הרשאותיו."""
     data      = update.callback_query.data
     target_id = int(data[len("ADMIN_MGR_CONFIRM_"):])
 
@@ -359,12 +400,22 @@ async def _execute_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ביטול קלט
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def _cancel_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מבטל כל קלט פתוח וחוזר לתפריט הראשי."""
     _clear_state(context)
     await _show_main_menu(update, context)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# עזרים פנימיים
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """מנקה את כל מפתחות המצב של מנהל המנהלים."""
     for key in (_STATE, _CHAT_ID, _MSG_ID, _VIEWED_PERMS):
         context.user_data.pop(key, None)
 
@@ -376,6 +427,7 @@ async def _edit_stored(
     text: str,
     keyboard: InlineKeyboardMarkup,
 ) -> None:
+    """עורך הודעת פרומפט שמורה לפי chat_id + message_id."""
     if not chat_id or not msg_id:
         return
     try:

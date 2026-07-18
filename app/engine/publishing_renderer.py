@@ -32,14 +32,18 @@ from repositories.pub_button_repository import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# מעקב הודעת בית — מניעת הצפה בעת לחיצות חוזרות על /start
+# ---------------------------------------------------------------------------
+_last_home_msg: dict[int, int] = {}
+
+
+# ---------------------------------------------------------------------------
+# כפתורי מערכת
+# ---------------------------------------------------------------------------
 _SYSTEM_BUTTONS: list[list[InlineKeyboardButton]] = [
     [InlineKeyboardButton("🪪 שלח אימות", callback_data="START_VERIFY")],
 ]
-
-# כפתור עם עד _SHORT_LABEL_MAX תווים נחשב "קצר" ומוזווג עם קצר אחר.
-# כפתור ארוך יותר מקבל שורה מלאה לעצמו.
-# בדיקת אורך: len() על Python str — Hebrew / emoji = תו אחד כל אחד.
-_SHORT_LABEL_MAX = 11
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +80,9 @@ def _db_btn_to_tg(btn) -> Optional[InlineKeyboardButton]:
         return None
 
 
+_SHORT_LABEL_MAX = 11
+
+
 def _row_sort_key(btn) -> tuple:
     """מפתח מיון תואם sqlite3.Row — ללא שימוש ב-.get()."""
     row_index = btn["row_index"] or 0
@@ -87,31 +94,10 @@ def _row_sort_key(btn) -> tuple:
     return (row_index, sort_order)
 
 
-# ---------------------------------------------------------------------------
-# _build_keyboard — greedy packing
-# ---------------------------------------------------------------------------
-
 def _build_keyboard(
     buttons: list,
     include_system: bool = False,
 ) -> InlineKeyboardMarkup:
-    """
-    בונה InlineKeyboardMarkup בפריסה מקצועית — כמו בוטים מובילים בטלגרם.
-
-    אלגוריתם greedy packing:
-    ─────────────────────────────────────────────────────
-    • כפתורים ממוינים לפי (row_index, sort_order) — כוונת ה-DB נשמרת.
-    • סריקה ליניארית; בכל שלב:
-        – כפתור קצר (label ≤ _SHORT_LABEL_MAX תווים):
-            אם יש כפתור קצר ממתין → הם מוזווגים לשורה אחת.
-            אחרת → הכפתור ממתין לשותף.
-        – כפתור ארוך:
-            אם יש ממתין → הוא נשלח תחילה לשורה משלו.
-            הכפתור הארוך נשלח לשורה משלו.
-    • לעולם לא יותר מ-2 כפתורים בשורה.
-    • כפתורים כבויים (is_active=0) מושמטים.
-    ─────────────────────────────────────────────────────
-    """
     active = [b for b in buttons if b["is_active"]]
     active.sort(key=_row_sort_key)
 
@@ -122,9 +108,7 @@ def _build_keyboard(
         tg = _db_btn_to_tg(btn)
         if tg is None:
             continue
-
         is_short = len(tg.text) <= _SHORT_LABEL_MAX
-
         if is_short:
             if pending is not None:
                 rows.append([pending, tg])
@@ -142,7 +126,6 @@ def _build_keyboard(
 
     if include_system:
         rows.extend(_SYSTEM_BUTTONS)
-
     return InlineKeyboardMarkup(rows)
 
 
@@ -155,77 +138,30 @@ def _back_keyboard(btn) -> InlineKeyboardMarkup:
     ])
 
 
-async def _delete_message(message) -> None:
-    """מוחק הודעה קיימת לפני שליחת חדשה — מתועד בלוג אם נכשל."""
-    try:
-        await message.delete()
-    except TelegramError as exc:
-        logger.warning(
-            "Could not delete message %d in chat %d: %s",
-            message.message_id,
-            message.chat_id,
-            exc,
-        )
-
-
 # ---------------------------------------------------------------------------
-# _send_media — שולח מדיה לפי media_type
+# _send_media
 # ---------------------------------------------------------------------------
 
 async def _send_media(
     bot: Bot,
     chat_id: int,
     file_id: str,
-    media_type: str,
+    media_type: Optional[str],
     caption: str,
     keyboard: InlineKeyboardMarkup,
 ):
-    """
-    שולח את הודעת המדיה המתאימה לפי media_type.
-
-    video_note ו-sticker אינם תומכים ב-caption ב-Telegram API —
-    עבורם נשלח המדיה עם ה-keyboard בלבד.
-    """
-    if media_type == "video":
-        return await bot.send_video(
-            chat_id=chat_id, video=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
-    elif media_type == "animation":
-        return await bot.send_animation(
-            chat_id=chat_id, animation=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
-    elif media_type == "audio":
-        return await bot.send_audio(
-            chat_id=chat_id, audio=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
-    elif media_type == "voice":
-        return await bot.send_voice(
-            chat_id=chat_id, voice=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
-    elif media_type == "document":
-        return await bot.send_document(
-            chat_id=chat_id, document=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
-    elif media_type == "video_note":
-        return await bot.send_video_note(
-            chat_id=chat_id, video_note=file_id,
-            reply_markup=keyboard,
-        )
-    elif media_type == "sticker":
-        return await bot.send_sticker(
-            chat_id=chat_id, sticker=file_id,
-            reply_markup=keyboard,
-        )
-    else:  # photo (ברירת מחדל)
-        return await bot.send_photo(
-            chat_id=chat_id, photo=file_id,
-            caption=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
+    kwargs = dict(
+        chat_id=chat_id,
+        caption=caption,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    if media_type == "animation":
+        return await bot.send_animation(animation=file_id, **kwargs)
+    elif media_type == "video":
+        return await bot.send_video(video=file_id, **kwargs)
+    else:
+        return await bot.send_photo(photo=file_id, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +171,17 @@ async def _send_media(
 async def render_home(
     bot: Bot,
     chat_id: int,
-) -> Optional[int]:
-    """
-    שולח את דף הבית למשתמש כהודעה חדשה.
-    מחזיר את message_id של ההודעה שנשלחה, או None בכשל.
-    """
+) -> None:
+    prev_msg_id = _last_home_msg.pop(chat_id, None)
+    if prev_msg_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_msg_id)
+        except Exception:
+            pass
+
     try:
-        home  = get_home()
+        _raw  = get_home()
+        home  = dict(_raw) if _raw is not None else None  # sqlite3.Row → dict
         text  = "👋 ברוך הבא!"
         image = None
 
@@ -254,20 +194,25 @@ async def render_home(
             keyboard = InlineKeyboardMarkup(_SYSTEM_BUTTONS)
 
         if image:
-            media_type = home["media_type"] if home["media_type"] else "photo"
-            sent = await _send_media(bot, chat_id, image, media_type, text, keyboard)
+            msg = await _send_media(
+                bot, chat_id, image,
+                media_type=home.get("media_type"),
+                caption=text,
+                keyboard=keyboard,
+            )
         else:
-            sent = await bot.send_message(
+            msg = await bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 reply_markup=keyboard,
                 parse_mode="HTML",
             )
-        return sent.message_id
+
+        if msg:
+            _last_home_msg[chat_id] = msg.message_id
 
     except TelegramError as exc:
         logger.error("render_home failed for chat_id=%d: %s", chat_id, exc, exc_info=True)
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -279,15 +224,13 @@ async def render_page(
     chat_id: int,
     page_id: int,
 ) -> bool:
-    """
-    שולח עמוד פרסום למשתמש כהודעה חדשה.
-    מחזיר True בהצלחה, False בכשל.
-    """
     try:
-        page = pub_get_page_by_id(page_id)
-        if page is None or not page["is_active"]:
+        _raw = pub_get_page_by_id(page_id)
+        if _raw is None or not _raw["is_active"]:
             return False
+        page = dict(_raw)   # sqlite3.Row → dict (נדרש כדי לתמוך ב-.get())
 
+        # כפתורי ניווט לעמודי-בן פעילים
         sub_pages = [p for p in pub_get_pages_by_parent(page_id) if p["is_active"]]
         nav_rows: list[list[InlineKeyboardButton]] = [
             [InlineKeyboardButton(
@@ -297,12 +240,17 @@ async def render_page(
             for sp in sub_pages
         ]
 
+        # כפתורי DB לעמוד
         buttons = pub_get_buttons_for_page(page_id)
         db_kb   = _build_keyboard(buttons, include_system=False)
 
-        parent_id = page["parent_id"]
-        back_cb   = f"pub:user:page:{parent_id}" if parent_id else "pub:user:home"
-        all_rows  = (
+        # כפתור חזרה
+        back_cb = (
+            f"pub:user:page:{page['parent_id']}"
+            if page["parent_id"]
+            else "pub:user:home"
+        )
+        all_rows = (
             nav_rows
             + list(db_kb.inline_keyboard)
             + [[InlineKeyboardButton("◀️ חזור", callback_data=back_cb)]]
@@ -315,8 +263,12 @@ async def render_page(
         image = page["image_file_id"]
 
         if image:
-            media_type = page["media_type"] if page["media_type"] else "photo"
-            await _send_media(bot, chat_id, image, media_type, caption, keyboard)
+            await _send_media(
+                bot, chat_id, image,
+                media_type=page.get("media_type"),
+                caption=caption,
+                keyboard=keyboard,
+            )
         else:
             await bot.send_message(
                 chat_id=chat_id,
@@ -339,11 +291,6 @@ async def render_page(
 # ---------------------------------------------------------------------------
 
 async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    מטפל בכל callback_data שמתחיל ב-pub:user:.
-
-    בכל מעבר: מוחק את ההודעה הקיימת (await) לפני שליחת החדשה.
-    """
     query = update.callback_query
     await query.answer()
 
@@ -352,7 +299,10 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     bot     = context.bot
     chat_id = query.message.chat_id
 
-    await _delete_message(query.message)
+    try:
+        await query.message.delete()
+    except TelegramError:
+        pass
 
     if action == "home":
         await render_home(bot, chat_id)

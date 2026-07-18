@@ -4,6 +4,20 @@ from telegram.ext import ContextTypes
 from services.page_service import load_page
 from services.message_manager import MessageManager
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ניווט: מעקב היסטוריה ב-context.user_data
+#
+# _BACK_PREFIX  — prefix ל-callback_data של כפתורי ⬅️ חזור.
+#                 callback_data = "_back:{page_key_to_return_to}"
+#                 bot.py אינו מטפל בו ישירות — נופל ל-PageEngine.show_page.
+#
+# _NAV_STACK    — מפתח ב-context.user_data לשמירת רשימת הניווט (list[str]).
+#                 כל כניסה לעמוד חדש מוסיפה אותו לרשימה.
+#                 לחיצה על ⬅️ מסירה את הרמה הנוכחית מהרשימה.
+# ──────────────────────────────────────────────────────────────────────────────
+_BACK_PREFIX  = "_back:"
+_NAV_STACK    = "_nav_stack"
+
 
 class PageEngine:
 
@@ -13,7 +27,31 @@ class PageEngine:
         # מחיקת ההודעה הקודמת של הבוט
         await MessageManager.clear(update, context)
 
-        page = load_page(page_key)
+        # ── ניהול stack ניווט ────────────────────────────────────────────────
+        is_back    = page_key.startswith(_BACK_PREFIX)
+        actual_key = page_key[len(_BACK_PREFIX):] if is_back else page_key
+
+        stack: list = list(context.user_data.get(_NAV_STACK, []))
+
+        if is_back:
+            # חזרה: מסיר את הרמה הנוכחית מה-stack
+            if stack:
+                stack.pop()
+        else:
+            # קדימה: מוסיף רק אם שונה מהרמה הנוכחית (מניעת כפילות)
+            if not stack or stack[-1] != actual_key:
+                stack.append(actual_key)
+
+        context.user_data[_NAV_STACK] = stack
+
+        # callback לכפתור ⬅️ חזור
+        if len(stack) >= 2:
+            back_cb = f"{_BACK_PREFIX}{stack[-2]}"   # עמוד קודם
+        else:
+            back_cb = "HOME"                          # מטופל ב-bot.py → render_home
+        # ─────────────────────────────────────────────────────────────────────
+
+        page = load_page(actual_key)
 
         if not page:
             if update.callback_query:
@@ -38,6 +76,9 @@ class PageEngine:
             ]
             for btn in page.get("buttons", [])
         ]
+
+        # כפתור ⬅️ חזור — מוצג תמיד בתחתית המקלדת
+        keyboard.append([InlineKeyboardButton("⬅️ חזור", callback_data=back_cb)])
 
         markup = InlineKeyboardMarkup(keyboard)
 
