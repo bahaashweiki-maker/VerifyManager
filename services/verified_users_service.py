@@ -99,7 +99,14 @@ def get_verified_user_by_id(verification_id: int) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_user_type(telegram_id: int) -> str:
-    """מחזיר את מפתח סוג המשתמש. ברירת מחדל: 'verified'."""
+    """
+    מחזיר את מפתח סוג המשתמש.
+
+    ברירת מחדל: 'none' — משתמש שלא הוקצה לו סוג מפורש בטבלת
+    user_type_assignments לא יקבל גישה אוטומטית לקטלוגים עם
+    audience='verified' או כל audience ספציפי אחר.
+    רק קטלוגים עם audience='all' יהיו גלויים לו.
+    """
     try:
         with get_connection() as conn:
             cur = conn.execute(
@@ -107,10 +114,13 @@ def get_user_type(telegram_id: int) -> str:
                 (telegram_id,),
             )
             row = cur.fetchone()
-            return row[0] if row else "verified"
+            result = row[0] if row else "none"
+            print(f"[AUTH-DEBUG] get_user_type(telegram_id={telegram_id}) → row={row!r} → result={result!r}")
+            return result
     except Exception as exc:
+        print(f"[AUTH-DEBUG] get_user_type(telegram_id={telegram_id}) → EXCEPTION: {exc}")
         logger.error("get_user_type(%s) failed: %s", telegram_id, exc)
-        return "verified"
+        return "none"
 
 
 def set_user_type(
@@ -143,9 +153,16 @@ def set_user_type(
 
 
 def get_user_type_display(telegram_id: int) -> str:
-    """מחזיר מחרוזת תצוגה כגון '⭐ VIP'."""
+    """
+    מחזיר מחרוזת תצוגה כגון '⭐ VIP'.
+
+    אם type_key הוא 'none' (לא הוגדר) — מחזיר '⬜ לא מוגדר'.
+    לא נופל על 'verified' כברירת מחדל, כדי שהמנהל לא יתבלבל.
+    """
     key  = get_user_type(telegram_id)
-    info = USER_TYPES.get(key, USER_TYPES["verified"])
+    info = USER_TYPES.get(key)
+    if info is None:
+        return "⬜ לא מוגדר"
     return f"{info['emoji']} {info['label']}"
 
 
@@ -418,19 +435,34 @@ def get_auto_catalogs_for_user(telegram_id: int) -> list:
     """
     type_key = get_user_type(telegram_id)
     catalogs = get_all_catalogs()
-    return [
+    print(f"[AUTH-DEBUG] get_auto_catalogs_for_user(telegram_id={telegram_id})")
+    print(f"[AUTH-DEBUG]   type_key={type_key!r}")
+    print(f"[AUTH-DEBUG]   all active catalogs ({len(catalogs)}): {[{'slug': c.get('slug'), 'audience': c.get('audience'), 'is_active': c.get('is_active')} for c in catalogs]}")
+    result = [
         cat for cat in catalogs
         if cat.get("audience", "custom") != "custom"
         and _audience_matches(cat.get("audience", "custom"), type_key)
     ]
+    print(f"[AUTH-DEBUG]   matched catalogs ({len(result)}): {[c.get('slug') for c in result]}")
+    return result
 
 
 def _audience_matches(audience: str, type_key: str) -> bool:
-    """בודק אם קהל יעד של קטלוג מתאים לסוג משתמש."""
+    """
+    בודק אם קהל יעד של קטלוג מתאים לסוג משתמש.
+
+    טבלת התאמות:
+      audience='all'      → כולם (כולל type_key='none')
+      audience='verified' → רק מי שהוקצה לו type_key='verified' מפורשות
+      audience='vip'      → type_key='vip' או 'vip_plus'
+      audience='vip_plus' → type_key='vip_plus' בלבד
+      audience='merchant' → type_key='merchant' בלבד
+      audience='business' → type_key='business' בלבד
+      audience='partner'  → type_key='partner' בלבד
+      audience='custom'   → לא מטופל כאן (נסנן ב-get_auto_catalogs_for_user)
+    """
     if audience == "all":
         return True
-    if audience == "verified":
-        return True  # כל המאומתים
     if audience == "vip" and type_key == "vip_plus":
         return True  # VIP+ מקבל גם קטלוגי VIP
     return audience == type_key
@@ -519,9 +551,13 @@ def delete_catalog(catalog_id: int) -> bool:
 
 def get_user_catalog_slugs(telegram_id: int) -> set:
     perms = get_user_permissions(telegram_id)
-    return {
+    result = {
         p[len("catalog."):] for p in perms if p.startswith("catalog.")
     }
+    print(f"[AUTH-DEBUG] get_user_catalog_slugs(telegram_id={telegram_id})")
+    print(f"[AUTH-DEBUG]   all permissions: {perms}")
+    print(f"[AUTH-DEBUG]   catalog slugs (manual): {result}")
+    return result
 
 
 def toggle_catalog_permission(

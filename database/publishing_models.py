@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 def init_publishing_db() -> bool:
     """
-    יוצר את 3 הטבלאות של מודול הפרסום אם אינן קיימות.
+    יוצר את 3 הטבלאות של מודול הפרסום אם אינן קיימות,
+    ומבצע מיגרציה להוספת עמודת media_type אם חסרה (DB קיים).
 
     - publishing_home    — שורה יחידה (singleton) לדף הבית
     - publishing_pages   — עמודים/קטלוגים עם עומק בלתי מוגבל
@@ -40,6 +41,7 @@ def init_publishing_db() -> bool:
                 CREATE TABLE IF NOT EXISTS publishing_home (
                     id              INTEGER PRIMARY KEY CHECK (id = 1),
                     image_file_id   TEXT,
+                    media_type      TEXT NOT NULL DEFAULT 'photo',
                     text            TEXT,
                     is_active       INTEGER NOT NULL DEFAULT 1,
                     -- עמודות עתידיות לניהול הרשאות (לא מופעלות עדיין)
@@ -57,8 +59,10 @@ def init_publishing_db() -> bool:
                     parent_id       INTEGER REFERENCES publishing_pages(id) ON DELETE CASCADE,
                     title           TEXT NOT NULL,
                     image_file_id   TEXT,
+                    media_type      TEXT NOT NULL DEFAULT 'photo',
                     text            TEXT,
                     page_type       TEXT NOT NULL DEFAULT 'page',   -- 'page' | 'catalog'
+                    catalog_slug    TEXT,                           -- slug של הקטלוג (רק כש-page_type='catalog')
                     sort_order      INTEGER NOT NULL DEFAULT 0,
                     is_active       INTEGER NOT NULL DEFAULT 1,
                     -- עמודות עתידיות להרשאות
@@ -112,9 +116,67 @@ def init_publishing_db() -> bool:
                     ON publishing_buttons (page_id, sort_order);
             """)
 
+        # -----------------------------------------------------------------
+        # מיגרציה: הוספת media_type לטבלאות קיימות (אם העמודה חסרה).
+        # SQLite אינו תומך ב-"IF NOT EXISTS" ב-ALTER TABLE,
+        # לכן משתמשים ב-PRAGMA table_info ובדיקת שם עמודה.
+        # -----------------------------------------------------------------
+        _migrate_add_column(
+            table="publishing_home",
+            column="media_type",
+            definition="TEXT NOT NULL DEFAULT 'photo'",
+        )
+        _migrate_add_column(
+            table="publishing_pages",
+            column="media_type",
+            definition="TEXT NOT NULL DEFAULT 'photo'",
+        )
+        _migrate_add_column(
+            table="publishing_pages",
+            column="catalog_slug",
+            definition="TEXT",
+        )
+
         logger.info("Publishing DB tables verified/created successfully.")
         return True
 
     except sqlite3.Error as exc:
         logger.critical("init_publishing_db failed: %s", exc, exc_info=True)
         return False
+
+
+# ---------------------------------------------------------------------------
+# פנימי — מיגרציה בטוחה
+# ---------------------------------------------------------------------------
+
+def _migrate_add_column(table: str, column: str, definition: str) -> None:
+    """
+    מוסיף עמודה לטבלה אם אינה קיימת.
+
+    Parameters:
+        table:      שם הטבלה.
+        column:     שם העמודה הנדרשת.
+        definition: הגדרת הטיפוס וברירת המחדל, למשל "TEXT NOT NULL DEFAULT 'photo'".
+    """
+    try:
+        with get_connection() as conn:
+            existing = {
+                row[1]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if column not in existing:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+                conn.commit()
+                logger.info(
+                    "_migrate_add_column: added '%s' to '%s'", column, table
+                )
+            else:
+                logger.debug(
+                    "_migrate_add_column: '%s' already exists in '%s'", column, table
+                )
+    except sqlite3.Error as exc:
+        logger.error(
+            "_migrate_add_column(%s, %s) failed: %s", table, column, exc, exc_info=True
+        )

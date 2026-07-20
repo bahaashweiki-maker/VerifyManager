@@ -99,14 +99,17 @@ def pub_create_page(
     title: str,
     page_type: str = "page",
     parent_id: Optional[int] = None,
+    catalog_slug: Optional[str] = None,
 ) -> int:
     """
     יוצר עמוד חדש.
 
     Parameters:
-        title:     כותרת העמוד.
-        page_type: 'page' | 'catalog'.
-        parent_id: מזהה עמוד-אב (None = רמה ראשונה).
+        title:        כותרת העמוד.
+        page_type:    'page' | 'catalog'.
+        parent_id:    מזהה עמוד-אב (None = רמה ראשונה).
+        catalog_slug: slug הקטלוג המקושר (רלוונטי רק כש-page_type='catalog').
+                      None = ללא קישור (תאימות לאחור).
 
     Returns:
         id של העמוד החדש, או -1 בכשל.
@@ -124,13 +127,17 @@ def pub_create_page(
             next_order = (row[0] + 1) if row else 0
 
             cur = conn.execute(
-                "INSERT INTO publishing_pages (title, page_type, parent_id, sort_order)"
-                " VALUES (?, ?, ?, ?)",
-                (title, page_type, parent_id, next_order),
+                "INSERT INTO publishing_pages"
+                " (title, page_type, parent_id, sort_order, catalog_slug)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (title, page_type, parent_id, next_order, catalog_slug),
             )
             conn.commit()
             new_id: int = cur.lastrowid  # type: ignore[assignment]
-        logger.info("pub_create_page: created id=%d title='%s'", new_id, title)
+        logger.info(
+            "pub_create_page: created id=%d title='%s' catalog_slug=%s",
+            new_id, title, catalog_slug,
+        )
         return new_id
     except sqlite3.Error as exc:
         logger.error("pub_create_page failed: %s", exc, exc_info=True)
@@ -144,6 +151,23 @@ def pub_create_page(
 def pub_update_page_title(page_id: int, title: str) -> bool:
     """עדכון כותרת עמוד."""
     return _update_page_field(page_id, "title", title)
+
+
+def pub_update_catalog_slug(page_id: int, new_slug: str) -> bool:
+    """
+    מעדכן את ה-catalog_slug של עמוד קטלוג קיים.
+
+    משמש כאשר הקטלוג המקושר הוחלף או שונה, ויש לקשר מחדש את
+    העמוד לקטלוג פעיל אחר ללא מחיקת העמוד עצמו.
+
+    Parameters:
+        page_id:  מזהה עמוד הקטלוג.
+        new_slug: ה-slug של הקטלוג החדש מטבלת catalogs.
+
+    Returns:
+        True אם עודכן, False בכשל.
+    """
+    return _update_page_field(page_id, "catalog_slug", new_slug)
 
 
 def pub_update_page_media(
@@ -360,3 +384,4 @@ def _swap_sort_order(page_id: int, direction: str) -> bool:
     except sqlite3.Error as exc:
         logger.error("_swap_sort_order(%d, %s) failed: %s", page_id, direction, exc, exc_info=True)
         return False
+

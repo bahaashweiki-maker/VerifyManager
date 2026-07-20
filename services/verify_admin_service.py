@@ -93,12 +93,30 @@ def approve_verification(verification_id):
     with get_connection() as conn:
         cursor = conn.cursor()
 
+        # שליפת telegram_id — נדרש להקצאת סוג משתמש
+        cursor.execute(
+            "SELECT telegram_id FROM verifications WHERE id = ?",
+            (verification_id,),
+        )
+        row  = cursor.fetchone()
+        tgid = row[0] if row else None
+
+        # עדכון סטטוס האימות
         cursor.execute("""
             UPDATE verifications
-            SET status = 'approved',
+            SET status     = 'approved',
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (verification_id,))
+
+        # הקצאת type_key='verified' אם אין הקצאה קיימת.
+        # INSERT OR IGNORE — לא דורס vip / merchant / vip_plus וכו'.
+        if tgid:
+            cursor.execute("""
+                INSERT OR IGNORE INTO user_type_assignments
+                    (telegram_id, type_key)
+                VALUES (?, 'verified')
+            """, (tgid,))
 
         conn.commit()
 
@@ -170,6 +188,7 @@ def get_verification_stats():
         """)
 
         return cursor.fetchall()
+
     
 def get_verification_index(verifications, verification_id):
     for index, verify in enumerate(verifications):

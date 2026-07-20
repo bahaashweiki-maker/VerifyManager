@@ -42,6 +42,7 @@ __all__ = [
     "kb_button_view",
     "kb_select_target_page",
     "kb_wait_input",
+    "kb_catalog_audience_select",
 ]
 
 
@@ -114,9 +115,10 @@ def kb_pages_list(
             callback_data=cb("page", "view", page["id"]),
         )])
 
+    back_label = "◀️ חזור לתפריט ראשי" if parent_id is None else "◀️ חזור לקטלוג"
     rows.append([InlineKeyboardButton("➕ עמוד חדש",  callback_data=cb("page", "new",         parent_id or 0))])
     rows.append([InlineKeyboardButton("📂 קטלוג חדש", callback_data=cb("page", "new_catalog", parent_id or 0))])
-    rows.append([back_button(back_cb, "◀️ חזור")])
+    rows.append([back_button(back_cb, back_label)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -149,29 +151,24 @@ def kb_page_view(
     if is_catalog:
         # ── קטלוג ──────────────────────────────────────────────────────────
         # "עמודי-בן" עולה לשורה ראשונה, רוחב מלא — ההדגשה הויזואלית של קטלוג.
-        # כל שאר הפעולות זהות לעמוד רגיל; "כותרת" נקרא "שם קטלוג".
+        # התווית מציגה מצב חי (✅ יש תוכן / ריק) בדיוק כפי שנעשה ב-kb_home_menu.
+        children_label = "📂 עמודי-בן  ✅" if has_children else "📂 עמודי-בן  ─  ריק"
         rows: list[list[InlineKeyboardButton]] = [
-            [InlineKeyboardButton("📂 עמודי-בן",     callback_data=cb("pages", "list", page_id))],
-            [
-                InlineKeyboardButton("✏️ שם קטלוג",  callback_data=cb("page", "edit_title", page_id)),
-                InlineKeyboardButton("📝 טקסט",       callback_data=cb("page", "edit_text",  page_id)),
-            ],
-            [
-                InlineKeyboardButton("🎞 מדיה",       callback_data=cb("page", "edit_image", page_id)),
-                InlineKeyboardButton("🎛 כפתורים",    callback_data=cb("btn",  "list", "page", page_id)),
-            ],
+            [InlineKeyboardButton(children_label,                                        callback_data=cb("pages", "list", page_id))],
+            [InlineKeyboardButton("✏️ שם קטלוג",  callback_data=cb("page", "edit_title", page_id))],
+            [InlineKeyboardButton("📝 טקסט",       callback_data=cb("page", "edit_text",  page_id))],
+            [InlineKeyboardButton("🎞 מדיה",       callback_data=cb("page", "edit_image", page_id))],
+            [InlineKeyboardButton("🎛 כפתורים",    callback_data=cb("btn",  "list", "page", page_id))],
+            [InlineKeyboardButton("👥 הרשאות צפייה", callback_data=cb("catalog", "edit_audience", page_id))],
+            [InlineKeyboardButton("🔄 שנה קטלוג",    callback_data=cb("catalog", "relink",        page_id))],
         ]
     else:
         # ── עמוד רגיל ──────────────────────────────────────────────────────
         rows = [
-            [
-                InlineKeyboardButton("✏️ כותרת",     callback_data=cb("page", "edit_title", page_id)),
-                InlineKeyboardButton("📝 טקסט",      callback_data=cb("page", "edit_text",  page_id)),
-            ],
-            [
-                InlineKeyboardButton("🎞 מדיה",      callback_data=cb("page", "edit_image", page_id)),
-                InlineKeyboardButton("🎛 כפתורים",   callback_data=cb("btn",  "list", "page", page_id)),
-            ],
+            [InlineKeyboardButton("✏️ כותרת",     callback_data=cb("page", "edit_title", page_id))],
+            [InlineKeyboardButton("📝 טקסט",      callback_data=cb("page", "edit_text",  page_id))],
+            [InlineKeyboardButton("🎞 מדיה",      callback_data=cb("page", "edit_image", page_id))],
+            [InlineKeyboardButton("🎛 כפתורים",   callback_data=cb("btn",  "list", "page", page_id))],
         ]
         if has_children:
             rows.append([InlineKeyboardButton(
@@ -189,6 +186,40 @@ def kb_page_view(
         [InlineKeyboardButton(delete_label,  callback_data=cb("page", "delete", page_id))],
         [back_button(back_cb, "◀️ חזור לרשימת עמודים")],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+# ---------------------------------------------------------------------------
+# בחירת audience לקטלוג
+# ---------------------------------------------------------------------------
+
+def kb_catalog_audience_select(
+    mode: str,
+    audiences: dict,
+    back_cb: str,
+) -> InlineKeyboardMarkup:
+    """
+    מקלדת לבחירת audience (מי רואה את הקטלוג).
+
+    mode:
+      "new"            — בעת יצירת קטלוג חדש → callback: pub:catalog:new_audience:<key>
+      "edit:<page_id>" — בעת עריכת קטלוג קיים → callback: pub:catalog:apply_audience:<page_id>:<key>
+
+    audiences: מילון {key: תווית} — בד"כ CATALOG_AUDIENCES מ-verified_users_service.
+    back_cb:   callback_data לכפתור ◀️ ביטול.
+    """
+    is_edit = mode.startswith("edit:")
+    page_id = mode.split(":")[1] if is_edit else None
+
+    rows = []
+    for key, label in audiences.items():
+        if is_edit:
+            data = cb("catalog", "apply_audience", page_id, key)
+        else:
+            data = cb("catalog", "new_audience", key)
+        rows.append([InlineKeyboardButton(label, callback_data=data)])
+
+    rows.append([back_button(back_cb, "◀️ ביטול")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -221,8 +252,9 @@ def kb_buttons_list(
             callback_data=cb("btn", "view", btn["id"]),
         )])
 
+    back_label = "◀️ חזור לדף הבית" if owner_type == "home" else "◀️ חזור לעמוד"
     rows.append([InlineKeyboardButton("➕ כפתור חדש", callback_data=cb("btn", "new", owner_type, owner_id))])
-    rows.append([back_button(back_cb, "◀️ חזור")])
+    rows.append([back_button(back_cb, back_label)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -308,3 +340,4 @@ def kb_wait_input(back_cb: str) -> InlineKeyboardMarkup:
     כפתור ביטול אחד שחוזר אחורה.
     """
     return kb_cancel(back_cb)
+

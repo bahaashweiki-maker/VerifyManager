@@ -165,6 +165,11 @@ def pub_update_button_type(btn_id: int, button_type: str) -> bool:
     return _update_btn_field(btn_id, "button_type", button_type)
 
 
+def pub_update_button_target_page(btn_id: int, target_page_id: Optional[int]) -> bool:
+    """עדכון עמוד יעד לכפתור page_link."""
+    return _update_btn_field(btn_id, "target_page_id", target_page_id)
+
+
 def pub_toggle_button_active(btn_id: int) -> bool:
     """מחליף מצב הפעלה של כפתור."""
     try:
