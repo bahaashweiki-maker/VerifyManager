@@ -17,6 +17,8 @@ from services.verify_service import (
 
 from app.engine.page_engine import PageEngine
 from app.engine.publishing_renderer import render_home, handle_user_nav
+from datetime import datetime
+from services.verified_users_service import is_suspended, get_active_suspension
 
 from admin.admin import admin_panel
 from admin.verify_admin import verify_admin_menu
@@ -35,11 +37,70 @@ from services.permission_service import has_permission
 # ─────────────────────────────────────────
 # /start — תמיד דרך Publishing Module
 # ─────────────────────────────────────────
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def _reject_if_suspended(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return True and notify the user if they are suspended.
+
+    This helper detects the user id from the Update (message or callback)
+    and, if an active suspension exists, notifies the user and returns True
+    to indicate processing should stop.
+    """
+    user = None
+    if update.effective_user:
+        user = update.effective_user
+    elif getattr(update, 'message', None) and getattr(update.message, 'from_user', None):
+        user = update.message.from_user
+    elif getattr(update, 'callback_query', None) and getattr(update.callback_query, 'from_user', None):
+        user = update.callback_query.from_user
+
+    if not user:
+        return False
+
+    uid = user.id
     try:
-        await update.message.delete()
+        if is_suspended(uid):
+            susp = get_active_suspension(uid)
+            until = susp.get("suspended_until") if susp else None
+            if until:
+                try:
+                    until_dt = datetime.fromisoformat(until)
+                    until_str = until_dt.strftime('%Y-%m-%d %H:%M UTC')
+                except Exception:
+                    until_str = until
+                text = f"🚫 החשבון שלך מושעה עד: {until_str}."
+            else:
+                text = "🚫 החשבון שלך מושעה (קבוע)."
+
+            # Prefer showing as alert for callback queries
+            if getattr(update, 'callback_query', None):
+                try:
+                    await update.callback_query.answer(text, show_alert=True)
+                except Exception:
+                    pass
+                try:
+                    await update.callback_query.message.delete()
+                except Exception:
+                    pass
+            else:
+                chat_id = None
+                if getattr(update, 'effective_chat', None):
+                    chat_id = update.effective_chat.id
+                elif getattr(update, 'message', None):
+                    chat_id = update.message.chat_id
+                if chat_id:
+                    try:
+                        await context.bot.send_message(chat_id, text)
+                    except Exception:
+                        pass
+            return True
     except Exception:
-        pass
+        # Fail-open on errors in suspension check to avoid accidental blocks
+        return False
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _reject_if_suspended(update, context):
+        return
     await render_home(context.bot, update.effective_chat.id)
 
 
@@ -54,8 +115,17 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # כל הכפתורים
 # ─────────────────────────────────────────
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Block suspended users early
+    if await _reject_if_suspended(update, context):
+        return
     query = update.callback_query
     data  = query.data
+    # DEBUG: start of button_click
+    try:
+        user_id = getattr(query.from_user, 'id', None)
+    except Exception:
+        user_id = None
+    print(f"[DEBUG] button_click START callback_data={data!r} user_id={user_id!r}")
 
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):
@@ -140,7 +210,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = query.from_user.id
         if not is_super_admin(uid) and not has_permission(uid, "users.view"):
             await query.answer("⛔ אין לך הרשאה לנהל משתמשים.", show_alert=True)
+            print(f"[DEBUG] button_click BLOCKED before routing to verified_users_route data={data!r} user_id={uid!r}")
             return
+        # DEBUG: about to route to verified_users_route
+        print(f"[DEBUG] button_click ROUTE_TO verified_users_route data={data!r} user_id={uid!r}")
         return await verified_users_route(update, context)
 
     # 7. HOME — דרך Publishing Module בלבד
@@ -177,6 +250,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # מדיה / טקסט נכנסים
 # ─────────────────────────────────────────
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Block suspended users early
+    if await _reject_if_suspended(update, context):
+        return
     # קלט ממנהל המנהלים
     if context.user_data.get("admin_mgr_state") and update.message and update.message.text:
         return await handle_admin_mgr_input(update, context)

@@ -132,12 +132,20 @@ async def verified_users_route(
 ) -> None:
     query = update.callback_query
     data  = query.data
+    # DEBUG: start of verified_users_route
+    try:
+        qfrom = getattr(query.from_user, 'id', None)
+    except Exception:
+        qfrom = None
+    print(f"[DEBUG] verified_users_route START callback_data={data!r} from_user={qfrom!r}")
 
     if data == "VUSERS_LIST":
+        print(f"[DEBUG] verified_users_route -> VUSERS_LIST return to _show_users_list data={data!r}")
         return await _show_users_list(update, context)
 
     if data.startswith("VUSERS_VIEW_"):
         vid = int(data[len("VUSERS_VIEW_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_VIEW return to _show_user_view vid={vid!r}")
         return await _show_user_view(update, context, vid)
 
     # ── סוג משתמש ─────────────────────────────────────────────────────────────
@@ -146,25 +154,42 @@ async def verified_users_route(
         idx    = suffix.index("_")
         vid    = int(suffix[:idx])
         tkey   = suffix[idx + 1:]
+        print(f"[DEBUG] verified_users_route -> VUSERS_TYPE_SET return to _execute_set_type vid={vid!r} tkey={tkey!r}")
         return await _execute_set_type(update, context, vid, tkey)
 
     if data.startswith("VUSERS_TYPE_"):
         vid = int(data[len("VUSERS_TYPE_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_TYPE return to _show_type_selection vid={vid!r}")
         return await _show_type_selection(update, context, vid)
 
     # ── אזהרות ────────────────────────────────────────────────────────────────
     if data.startswith("VUSERS_WARN_LIST_"):
         vid = int(data[len("VUSERS_WARN_LIST_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_WARN_LIST routing to _show_warnings_list vid={vid!r}")
         return await _show_warnings_list(update, context, vid)
 
     if data.startswith("VUSERS_WARN_ADD_"):
         vid = int(data[len("VUSERS_WARN_ADD_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_WARN_ADD routing to _prompt_add_warning vid={vid!r}")
         return await _prompt_add_warning(update, context, vid)
 
     if data.startswith("VUSERS_WARN_DEL_"):
         suffix = data[len("VUSERS_WARN_DEL_"):]
         vid, wid = _split_two_ids(suffix)
+        print(f"[DEBUG] verified_users_route -> VUSERS_WARN_DEL routing to _delete_warning_action vid={vid!r} wid={wid!r}")
         return await _delete_warning_action(update, context, vid, wid)
+
+    if data.startswith("VUSERS_WARN_VIEW_"):
+        # VUSERS_WARN_VIEW_{vid}_{wid} -> show full warning content with back button
+        suffix = data[len("VUSERS_WARN_VIEW_"):]
+        parts = suffix.split("_", 1)
+        if len(parts) == 2:
+            vid = int(parts[0])
+            wid = int(parts[1])
+            print(f"[DEBUG] verified_users_route -> VUSERS_WARN_VIEW routing to _view_warning vid={vid!r} wid={wid!r}")
+            return await _view_warning(update, context, vid, wid)
+        else:
+            return await _show_warnings_list(update, context, int(parts[0]) if parts else 0)
 
     # ── השעיות ────────────────────────────────────────────────────────────────
     if data.startswith("VUSERS_SUSPEND_DO_"):
@@ -172,31 +197,38 @@ async def verified_users_route(
         idx    = suffix.index("_")
         vid    = int(suffix[:idx])
         dur    = suffix[idx + 1:]
+        print(f"[DEBUG] verified_users_route -> VUSERS_SUSPEND_DO routing to _execute_suspend vid={vid!r} dur={dur!r}")
         return await _execute_suspend(update, context, vid, dur)
 
     if data.startswith("VUSERS_SUSPEND_"):
         vid = int(data[len("VUSERS_SUSPEND_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_SUSPEND routing to _show_suspend_menu vid={vid!r}")
         return await _show_suspend_menu(update, context, vid)
 
     if data.startswith("VUSERS_UNSUSPEND_"):
         vid = int(data[len("VUSERS_UNSUSPEND_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_UNSUSPEND routing to _execute_unsuspend vid={vid!r}")
         return await _execute_unsuspend(update, context, vid)
 
     # ── חסימה ─────────────────────────────────────────────────────────────────
     if data.startswith("VUSERS_BLOCK_CONFIRM_"):
         vid = int(data[len("VUSERS_BLOCK_CONFIRM_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_BLOCK_CONFIRM routing to _execute_block vid={vid!r}")
         return await _execute_block(update, context, vid)
 
     if data.startswith("VUSERS_BLOCK_"):
         vid = int(data[len("VUSERS_BLOCK_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_BLOCK routing to _confirm_block vid={vid!r}")
         return await _confirm_block(update, context, vid)
 
     if data.startswith("VUSERS_UNBLOCK_CONFIRM_"):
         vid = int(data[len("VUSERS_UNBLOCK_CONFIRM_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_UNBLOCK_CONFIRM routing to _execute_unblock vid={vid!r}")
         return await _execute_unblock(update, context, vid)
 
     if data.startswith("VUSERS_UNBLOCK_"):
         vid = int(data[len("VUSERS_UNBLOCK_"):])
+        print(f"[DEBUG] verified_users_route -> VUSERS_UNBLOCK routing to _confirm_unblock vid={vid!r}")
         return await _confirm_unblock(update, context, vid)
 
     # ── הרשאות כלליות ─────────────────────────────────────────────────────────
@@ -271,9 +303,48 @@ async def verified_users_route(
         vid, nid = _split_two_ids(suffix)
         return await _delete_note_action(update, context, vid, nid)
 
+    if data.startswith("VUSERS_NOTE_VIEW_"):
+        # VUSERS_NOTE_VIEW_{vid}_{nid} -> show full note content with back button
+        suffix = data[len("VUSERS_NOTE_VIEW_"):]
+        parts = suffix.split("_", 1)
+        if len(parts) == 2:
+            vid = int(parts[0])
+            nid = int(parts[1])
+            print(f"[DEBUG] verified_users_route -> VUSERS_NOTE_VIEW routing to _view_note vid={vid!r} nid={nid!r}")
+            return await _view_note(update, context, vid, nid)
+        else:
+            return await _show_notes_list(update, context, int(parts[0]) if parts else 0)
+
     if data.startswith("VUSERS_NOTES_"):
         vid = int(data[len("VUSERS_NOTES_"):])
         return await _show_notes_list(update, context, vid)
+
+    
+async def _view_note(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, nid: int
+) -> None:
+    """Show full admin note content and back button to notes list."""
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+
+    n = get_admin_note_by_id(nid)
+    if not n:
+        await update.callback_query.answer("⚠️ הערה לא נמצאה.", show_alert=True)
+        return
+
+    text = (
+        f"📝 <b>הערת מנהל</b>\n\n"
+        f"{n.get('note', '')}\n\n"
+        f"<i>נרשמה בתאריך: {_fmt_date(n.get('created_at'))}</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ חזרה", callback_data=f"VUSERS_NOTES_{vid}")],
+    ])
+
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
 
     if data.startswith("VUSERS_HISTORY_"):
         vid = int(data[len("VUSERS_HISTORY_"):])
@@ -498,33 +569,54 @@ async def _execute_set_type(
 async def _show_warnings_list(
     update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
 ) -> None:
+    print(f"[DEBUG] _show_warnings_list START vid={vid!r}")
     _clear_state(context)
     v = get_verified_user_by_id(vid)
     if not v:
         await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
         return
-    warnings = get_warnings(v["telegram_id"])
+
+    tg_id = v["telegram_id"]
+    print(f"[DEBUG] _show_warnings_list calling get_warnings for telegram_id={tg_id!r}")
+    try:
+        warnings = get_warnings(tg_id)
+        print(f"[DEBUG] _show_warnings_list DB returned {len(warnings) if warnings is not None else 0} records")
+    except Exception:
+        import traceback
+        print("[DEBUG] _show_warnings_list DB call raised exception:")
+        traceback.print_exc()
+        raise
 
     buttons = []
     for w in warnings:
         short = w["reason"][:30] + ("…" if len(w["reason"]) > 30 else "")
         date  = _fmt_date(w["created_at"])
+        # Open full warning on click
         buttons.append([
-            InlineKeyboardButton(f"⚠️ {short} | {date}", callback_data="IGNORE"),
+            InlineKeyboardButton(f"⚠️ {short} | {date}", callback_data=f"VUSERS_WARN_VIEW_{vid}_{w['id']}"),
             InlineKeyboardButton("🗑", callback_data=f"VUSERS_WARN_DEL_{vid}_{w['id']}"),
         ])
 
     buttons.append([InlineKeyboardButton("➕ הוסף אזהרה", callback_data=f"VUSERS_WARN_ADD_{vid}")])
     buttons.append([InlineKeyboardButton("🔙 חזרה",        callback_data=f"VUSERS_VIEW_{vid}")])
 
-    await update.callback_query.edit_message_text(
-        text=(
-            f"⚠️ <b>אזהרות</b> ({len(warnings)})\n\n"
-            f"{'אין אזהרות עדיין.' if not warnings else ''}"
-        ),
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="HTML",
-    )
+    print(f"[DEBUG] _show_warnings_list built keyboard with {len(buttons)} rows")
+    try:
+        print(f"[DEBUG] _show_warnings_list editing message text (warnings_count={len(warnings)})")
+        await update.callback_query.edit_message_text(
+            text=(
+                f"⚠️ <b>אזהרות</b> ({len(warnings)})\n\n"
+                f"{'אין אזהרות עדיין.' if not warnings else ''}"
+            ),
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+        print(f"[DEBUG] _show_warnings_list edit_message_text succeeded")
+    except Exception:
+        import traceback
+        print("[DEBUG] _show_warnings_list edit_message_text raised exception:")
+        traceback.print_exc()
+        raise
 
 
 async def _prompt_add_warning(
@@ -568,6 +660,21 @@ async def _process_add_warning(
         if success else
         "❌ שגיאה בהוספת האזהרה."
     )
+
+    # Notify the warned user immediately when the warning was saved
+    if success:
+        try:
+            warn_count = get_warnings_count(v["telegram_id"]) or 1
+            user_text = (
+                f"⚠️ אזהרה {warn_count} מתוך 3\n\n"
+                "קיבלת אזהרה ממנהלי המערכת.\n\n"
+                "אנא הקפד לפעול בהתאם לכללי הפלטפורמה."
+            )
+            await context.bot.send_message(chat_id=v["telegram_id"], text=user_text)
+        except Exception:
+            # Do not fail the admin flow if user notification fails
+            pass
+
     await _edit_stored(context, chat_id, msg_id, msg, _back_to_view_kb(vid))
 
 
@@ -577,6 +684,33 @@ async def _delete_warning_action(
     delete_warning(wid)
     await update.callback_query.answer("🗑 האזהרה נמחקה.")
     await _show_warnings_list(update, context, vid)
+
+
+async def _view_warning(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, wid: int
+) -> None:
+    """Show full warning content and back button to warnings list."""
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+
+    w = get_warning_by_id(wid)
+    if not w:
+        await update.callback_query.answer("⚠️ אזהרה לא נמצאה.", show_alert=True)
+        return
+
+    text = (
+        f"⚠️ <b>אזהרה</b>\n\n"
+        f"{w.get('reason', '')}\n\n"
+        f"<i>נרשמה בתאריך: {_fmt_date(w.get('created_at'))}</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ חזרה", callback_data=f"VUSERS_WARN_LIST_{vid}")],
+    ])
+
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1176,35 +1310,58 @@ async def _process_send_message(
 async def _show_notes_list(
     update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
 ) -> None:
+    print(f"[DEBUG] _show_notes_list START vid={vid!r}")
     _clear_state(context)
     v = get_verified_user_by_id(vid)
     if not v:
         await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
         return
 
-    notes = get_admin_notes(v["telegram_id"])
+    tg_id = v["telegram_id"]
+    print(f"[DEBUG] _show_notes_list calling get_admin_notes for telegram_id={tg_id!r}")
+    try:
+        notes = get_admin_notes(tg_id)
+        print(f"[DEBUG] _show_notes_list DB returned {len(notes) if notes is not None else 0} records")
+    except Exception as exc:
+        import traceback
+        print("[DEBUG] _show_notes_list DB call raised exception:")
+        traceback.print_exc()
+        raise
+
+    # build display text
+    text = (
+        f"📝 <b>הערות מנהל</b> ({len(notes)})\n\n"
+        f"{'אין הערות עדיין.' if not notes else ''}"
+    )
+    print(f"[DEBUG] _show_notes_list built text (length={len(text)})")
 
     buttons = []
     for n in notes:
         short = n["note"][:30] + ("…" if len(n["note"]) > 30 else "")
         date  = _fmt_date(n["created_at"])
+        # Open full note on click
         buttons.append([
-            InlineKeyboardButton(f"📝 {short} | {date}", callback_data="IGNORE"),
+            InlineKeyboardButton(f"📝 {short} | {date}", callback_data=f"VUSERS_NOTE_VIEW_{vid}_{n['id']}"),
             InlineKeyboardButton("🗑", callback_data=f"VUSERS_NOTE_DEL_{vid}_{n['id']}"),
         ])
 
     buttons.append([InlineKeyboardButton("➕ הוסף הערה", callback_data=f"VUSERS_NOTE_ADD_{vid}")])
     buttons.append([InlineKeyboardButton("🔙 חזרה",      callback_data=f"VUSERS_VIEW_{vid}")])
 
-    await update.callback_query.edit_message_text(
-        text=(
-            f"📝 <b>הערות מנהל</b> ({len(notes)})\n\n"
-            f"{'אין הערות עדיין.' if not notes else ''}"
-        ),
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="HTML",
-    )
-
+    print(f"[DEBUG] _show_notes_list built keyboard with {len(buttons)} rows")
+    try:
+        print(f"[DEBUG] _show_notes_list before edit_message_text (notes_count={len(notes)})")
+        await update.callback_query.edit_message_text(
+            text=text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+        print(f"[DEBUG] _show_notes_list edit_message_text succeeded")
+    except Exception:
+        import traceback
+        print("[DEBUG] _show_notes_list edit_message_text raised exception:")
+        traceback.print_exc()
+        raise
 
 async def _prompt_add_note(
     update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
