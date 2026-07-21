@@ -319,7 +319,23 @@ async def verified_users_route(
         vid = int(data[len("VUSERS_NOTES_"):])
         return await _show_notes_list(update, context, vid)
 
-    
+    if data.startswith("VUSERS_HISTORY_"):
+        vid = int(data[len("VUSERS_HISTORY_"):])
+        return await _show_history(update, context, vid)
+
+    # ── ביטול אימות ───────────────────────────────────────────────────────────
+    if data.startswith("VUSERS_REVOKE_CONFIRM_"):
+        vid = int(data[len("VUSERS_REVOKE_CONFIRM_"):])
+        return await _execute_revoke(update, context, vid)
+
+    if data.startswith("VUSERS_REVOKE_"):
+        vid = int(data[len("VUSERS_REVOKE_"):])
+        return await _confirm_revoke(update, context, vid)
+
+    if data == "VUSERS_CANCEL":
+        return await _cancel_input(update, context)
+
+
 async def _view_note(
     update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, nid: int
 ) -> None:
@@ -346,27 +362,10 @@ async def _view_note(
 
     await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
 
-    if data.startswith("VUSERS_HISTORY_"):
-        vid = int(data[len("VUSERS_HISTORY_"):])
-        return await _show_history(update, context, vid)
-
-    # ── ביטול אימות ───────────────────────────────────────────────────────────
-    if data.startswith("VUSERS_REVOKE_CONFIRM_"):
-        vid = int(data[len("VUSERS_REVOKE_CONFIRM_"):])
-        return await _execute_revoke(update, context, vid)
-
-    if data.startswith("VUSERS_REVOKE_"):
-        vid = int(data[len("VUSERS_REVOKE_"):])
-        return await _confirm_revoke(update, context, vid)
-
-    if data == "VUSERS_CANCEL":
-        return await _cancel_input(update, context)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # קלט טקסט מהמשתמש
 # ─────────────────────────────────────────────────────────────────────────────
-
 async def handle_verified_users_input(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
