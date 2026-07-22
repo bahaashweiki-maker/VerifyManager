@@ -15,7 +15,6 @@ async def verify_media_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
 
     data = query.data
-    print("MEDIA CALLBACK:", data)
 
     # ======================================
     # הצגת תעודת זהות

@@ -120,12 +120,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     data  = query.data
-    # DEBUG: start of button_click
-    try:
-        user_id = getattr(query.from_user, 'id', None)
-    except Exception:
-        user_id = None
-    print(f"[DEBUG] button_click START callback_data={data!r} user_id={user_id!r}")
+    # No debug prints during normal operation
 
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):
@@ -210,10 +205,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = query.from_user.id
         if not is_super_admin(uid) and not has_permission(uid, "users.view"):
             await query.answer("⛔ אין לך הרשאה לנהל משתמשים.", show_alert=True)
-            print(f"[DEBUG] button_click BLOCKED before routing to verified_users_route data={data!r} user_id={uid!r}")
             return
-        # DEBUG: about to route to verified_users_route
-        print(f"[DEBUG] button_click ROUTE_TO verified_users_route data={data!r} user_id={uid!r}")
         return await verified_users_route(update, context)
 
     # 7. HOME — דרך Publishing Module בלבד

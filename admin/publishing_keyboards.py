@@ -301,6 +301,7 @@ def kb_button_view(
             InlineKeyboardButton("📑 שכפל",          callback_data=cb("btn", "duplicate",  btn_id)),
             InlineKeyboardButton("➕ הוסף לאותה שורה", callback_data=cb("btn", "add_to_row", btn_id)),
         ],
+        [InlineKeyboardButton("➕ הוסף כפתור פנימי", callback_data=cb("btn", "add_inner", btn_id))],
         kb_move_row(                                  # ⬅️⬆️⬇️➡️ — ארבעת הכיוונים
             up_cb=cb("btn", "up",    btn_id),
             down_cb=cb("btn", "down", btn_id),
@@ -340,4 +341,3 @@ def kb_wait_input(back_cb: str) -> InlineKeyboardMarkup:
     כפתור ביטול אחד שחוזר אחורה.
     """
     return kb_cancel(back_cb)
-

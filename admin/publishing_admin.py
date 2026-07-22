@@ -768,6 +768,56 @@ def build_publishing_handler(
         )
         return S_BTN_SELECT_TYPE
 
+    async def cb_btn_add_inner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """
+        "כפתור בתוך כפתור" בלי מנגנון חדש:
+        ממפה את הכפתור הנוכחי ל-page_link לעמוד קיים (אם כבר משויך),
+        או יוצר עמוד רגיל חדש במנגנון העמודים הקיים ומשייך אליו.
+        לאחר מכן פותח ישירות את ניהול הכפתורים של עמוד היעד.
+        """
+        await answer_query(update)
+        btn_id = int(parse_cb(update.callback_query.data)[2])
+        btn = pub_get_button_by_id(btn_id)
+        if btn is None:
+            return S_BTN_LIST
+
+        target_page_id = btn["target_page_id"]
+        if target_page_id:
+            target_page = pub_get_page_by_id(target_page_id)
+        else:
+            target_page = None
+
+        if not target_page:
+            owner_type = "home" if btn["home_id"] else "page"
+            owner_id = btn["home_id"] or btn["page_id"]
+            parent_id = owner_id if owner_type == "page" else None
+            label = (btn["label"] or "").strip() or "כפתור"
+            new_page_id = pub_create_page(
+                title=f"{label} - עמוד",
+                page_type="page",
+                parent_id=parent_id,
+            )
+            if new_page_id <= 0:
+                await update.callback_query.answer("⚠️ שגיאה ביצירת עמוד פנימי", alert=True)
+                return S_BTN_VIEW
+            pub_update_button_type(btn_id, "page_link")
+            pub_update_button_target_page(btn_id, new_page_id)
+            target_page_id = new_page_id
+
+        context.user_data.update({_K_OWNER_TYPE: "page", _K_OWNER_ID: target_page_id})
+        buttons = pub_get_buttons_for_page(target_page_id)
+        await update.callback_query.edit_message_text(
+            f"<b>כפתורים</b> ({len(buttons)})",
+            reply_markup=kb_buttons_list(
+                buttons=buttons,
+                owner_type="page",
+                owner_id=target_page_id,
+                back_cb=cb("page", "view", target_page_id),
+            ),
+            parse_mode="HTML",
+        )
+        return S_BTN_LIST
+
     async def cb_btn_set_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await answer_query(update)
         parts      = parse_cb(update.callback_query.data)
@@ -1270,6 +1320,7 @@ def build_publishing_handler(
                 CallbackQueryHandler(cb_btn_toggle,     pattern=r"^pub:btn:toggle:"),
                 CallbackQueryHandler(cb_btn_duplicate,  pattern=r"^pub:btn:duplicate:"),
                 CallbackQueryHandler(cb_btn_add_to_row, pattern=r"^pub:btn:add_to_row:"),
+                CallbackQueryHandler(cb_btn_add_inner,  pattern=r"^pub:btn:add_inner:"),
                 CallbackQueryHandler(cb_btn_move,       pattern=r"^pub:btn:(up|down|left|right):"),
                 CallbackQueryHandler(cb_btn_delete,     pattern=r"^pub:btn:delete:"),
                 CallbackQueryHandler(cb_btn_list,       pattern=r"^pub:btn:list:"),
@@ -1343,4 +1394,3 @@ def _btn_text(btn) -> str:
         f"ערך: <code>{btn['value'] or 'אין'}</code>\n"
         f"סטטוס: {status}"
     )
-

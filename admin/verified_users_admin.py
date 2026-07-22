@@ -132,20 +132,16 @@ async def verified_users_route(
 ) -> None:
     query = update.callback_query
     data  = query.data
-    # DEBUG: start of verified_users_route
     try:
         qfrom = getattr(query.from_user, 'id', None)
     except Exception:
         qfrom = None
-    print(f"[DEBUG] verified_users_route START callback_data={data!r} from_user={qfrom!r}")
 
     if data == "VUSERS_LIST":
-        print(f"[DEBUG] verified_users_route -> VUSERS_LIST return to _show_users_list data={data!r}")
         return await _show_users_list(update, context)
 
     if data.startswith("VUSERS_VIEW_"):
         vid = int(data[len("VUSERS_VIEW_"):])
-        print(f"[DEBUG] verified_users_route -> VUSERS_VIEW return to _show_user_view vid={vid!r}")
         return await _show_user_view(update, context, vid)
 
     # ── סוג משתמש ─────────────────────────────────────────────────────────────
@@ -154,12 +150,10 @@ async def verified_users_route(
         idx    = suffix.index("_")
         vid    = int(suffix[:idx])
         tkey   = suffix[idx + 1:]
-        print(f"[DEBUG] verified_users_route -> VUSERS_TYPE_SET return to _execute_set_type vid={vid!r} tkey={tkey!r}")
         return await _execute_set_type(update, context, vid, tkey)
 
     if data.startswith("VUSERS_TYPE_"):
         vid = int(data[len("VUSERS_TYPE_"):])
-        print(f"[DEBUG] verified_users_route -> VUSERS_TYPE return to _show_type_selection vid={vid!r}")
         return await _show_type_selection(update, context, vid)
 
     # ── אזהרות ────────────────────────────────────────────────────────────────
@@ -310,7 +304,6 @@ async def verified_users_route(
         if len(parts) == 2:
             vid = int(parts[0])
             nid = int(parts[1])
-            print(f"[DEBUG] verified_users_route -> VUSERS_NOTE_VIEW routing to _view_note vid={vid!r} nid={nid!r}")
             return await _view_note(update, context, vid, nid)
         else:
             return await _show_notes_list(update, context, int(parts[0]) if parts else 0)

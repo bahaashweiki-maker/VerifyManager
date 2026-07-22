@@ -68,10 +68,19 @@ def get_all_verified_users() -> list:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute("""
-            SELECT id, telegram_id, full_name, username, status, created_at
-            FROM   verifications
-            WHERE  status IN ('approved', 'blocked')
-            ORDER  BY created_at DESC
+            SELECT
+                v.id,
+                v.telegram_id,
+                v.full_name,
+                v.username,
+                v.status,
+                v.created_at,
+                COALESCE(uta.type_key, 'none') AS type_key
+            FROM verifications v
+            LEFT JOIN user_type_assignments uta
+                ON uta.telegram_id = v.telegram_id
+            WHERE v.status IN ('approved', 'blocked')
+            ORDER BY v.created_at DESC
         """)
         return cur.fetchall()
 
@@ -115,10 +124,8 @@ def get_user_type(telegram_id: int) -> str:
             )
             row = cur.fetchone()
             result = row[0] if row else "none"
-            print(f"[AUTH-DEBUG] get_user_type(telegram_id={telegram_id}) → row={row!r} → result={result!r}")
             return result
     except Exception as exc:
-        print(f"[AUTH-DEBUG] get_user_type(telegram_id={telegram_id}) → EXCEPTION: {exc}")
         logger.error("get_user_type(%s) failed: %s", telegram_id, exc)
         return "none"
 
@@ -435,16 +442,11 @@ def get_auto_catalogs_for_user(telegram_id: int) -> list:
     """
     type_key = get_user_type(telegram_id)
     catalogs = get_all_catalogs()
-    print(f"[AUTH-DEBUG] get_auto_catalogs_for_user(telegram_id={telegram_id})")
-    print(f"[AUTH-DEBUG]   type_key={type_key!r}")
-    print(f"[AUTH-DEBUG]   all active catalogs ({len(catalogs)}): {[{'slug': c.get('slug'), 'audience': c.get('audience'), 'is_active': c.get('is_active')} for c in catalogs]}")
-    result = [
+    return [
         cat for cat in catalogs
         if cat.get("audience", "custom") != "custom"
         and _audience_matches(cat.get("audience", "custom"), type_key)
     ]
-    print(f"[AUTH-DEBUG]   matched catalogs ({len(result)}): {[c.get('slug') for c in result]}")
-    return result
 
 
 def _audience_matches(audience: str, type_key: str) -> bool:
@@ -551,13 +553,9 @@ def delete_catalog(catalog_id: int) -> bool:
 
 def get_user_catalog_slugs(telegram_id: int) -> set:
     perms = get_user_permissions(telegram_id)
-    result = {
-        p[len("catalog."):] for p in perms if p.startswith("catalog.")
+    return {
+        p[len("catalog."): ] for p in perms if p.startswith("catalog.")
     }
-    print(f"[AUTH-DEBUG] get_user_catalog_slugs(telegram_id={telegram_id})")
-    print(f"[AUTH-DEBUG]   all permissions: {perms}")
-    print(f"[AUTH-DEBUG]   catalog slugs (manual): {result}")
-    return result
 
 
 def toggle_catalog_permission(

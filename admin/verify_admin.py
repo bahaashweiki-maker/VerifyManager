@@ -18,14 +18,8 @@ from services.verify_admin_service import (
 
 
 async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    
-    print("VERIFY ADMIN MENU LOADED")
-
     query = update.callback_query
-   
     data = query.data
-    
-    print("CALLBACK:", data)
    
     # ======================================
     # אימותים ממתינים — הצגת רשימה

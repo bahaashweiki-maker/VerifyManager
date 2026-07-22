@@ -301,13 +301,8 @@ def _get_allowed_slugs(telegram_id: int) -> set:
         manual_slugs  = get_user_catalog_slugs(telegram_id)
         auto_slugs    = {cat["slug"] for cat in auto_catalogs}
         combined      = auto_slugs | manual_slugs
-        print(f"[AUTH-DEBUG] _get_allowed_slugs(telegram_id={telegram_id})")
-        print(f"[AUTH-DEBUG]   auto_slugs={auto_slugs}")
-        print(f"[AUTH-DEBUG]   manual_slugs={manual_slugs}")
-        print(f"[AUTH-DEBUG]   combined allowed={combined}")
         return combined
     except Exception as exc:
-        print(f"[AUTH-DEBUG] _get_allowed_slugs(telegram_id={telegram_id}) EXCEPTION: {exc}")
         logger.error(
             "_get_allowed_slugs failed for telegram_id=%s: %s", telegram_id, exc
         )
@@ -533,21 +528,14 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _raw    = pub_get_page_by_id(page_id)
         if _raw is not None and _raw["is_active"]:
             page_slug = _raw["catalog_slug"]
-            print(f"[AUTH-DEBUG] handle_user_nav page action")
-            print(f"[AUTH-DEBUG]   telegram_id={query.from_user.id!r}, page_id={page_id}")
-            print(f"[AUTH-DEBUG]   page_slug from DB={page_slug!r}  (type={type(page_slug).__name__})")
             if page_slug:
                 allowed = _get_allowed_slugs(query.from_user.id)
-                print(f"[AUTH-DEBUG]   COMPARISON: page_slug={page_slug!r}  in allowed={allowed}  result={page_slug in allowed}")
                 if page_slug not in allowed:
-                    print(f"[AUTH-DEBUG]   ACCESS DENIED returning lock")
                     await query.answer(
                         "אין לך הרשאה לצפות בתוכן זה.",
                         show_alert=True,
                     )
                     return
-            else:
-                print(f"[AUTH-DEBUG]   page_slug is empty/None — no access check needed")
         await query.answer()
         try:
             await query.message.delete()
