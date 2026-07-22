@@ -29,6 +29,8 @@ Callbacks:
     VUSERS_HISTORY_{vid}               — היסטוריית פעולות
     VUSERS_REVOKE_{vid}                — אישור ביטול אימות
     VUSERS_REVOKE_CONFIRM_{vid}        — ביצוע ביטול אימות
+    VUSERS_DELETE_DOS_{vid}            — אישור מחיקת תיק אימות
+    VUSERS_DELETE_DOS_CONFIRM_{vid}    — ביצוע מחיקת תיק אימות
     VUSERS_CATMGR                      — ניהול קטלוגים (כללי)
     VUSERS_CATMGR_NEW                  — פרומפט יצירת קטלוג חדש
     VUSERS_CATMGR_EDIT_{cid}           — עריכת קטלוג
@@ -62,6 +64,7 @@ from services.verified_users_service import (
     get_verified_user_by_id,
     get_verified_users_count,
     revoke_verification,
+    delete_verification_dossier,
     # סוג משתמש
     get_user_type,
     set_user_type,
@@ -325,6 +328,15 @@ async def verified_users_route(
         vid = int(data[len("VUSERS_REVOKE_"):])
         return await _confirm_revoke(update, context, vid)
 
+    # ── מחיקת תיק אימות ───────────────────────────────────────────────────────────
+    if data.startswith("VUSERS_DELETE_DOS_CONFIRM_"):
+        vid = int(data[len("VUSERS_DELETE_DOS_CONFIRM_"):])
+        return await _execute_delete_dossier(update, context, vid)
+
+    if data.startswith("VUSERS_DELETE_DOS_"):
+        vid = int(data[len("VUSERS_DELETE_DOS_"):])
+        return await _confirm_delete_dossier(update, context, vid)
+
     if data == "VUSERS_CANCEL":
         return await _cancel_input(update, context)
 
@@ -473,7 +485,7 @@ async def _show_user_view(
         InlineKeyboardButton("⏸️ השעיה",     callback_data=f"VUSERS_SUSPEND_{vid}")
     )
 
-    keyboard = InlineKeyboardMarkup([
+    keyboard_buttons = [
         [
             InlineKeyboardButton(f"⚠️ אזהרות ({warn_count})", callback_data=f"VUSERS_WARN_LIST_{vid}"),
             suspend_btn,
@@ -494,13 +506,22 @@ async def _show_user_view(
             InlineKeyboardButton("📝 הערות",    callback_data=f"VUSERS_NOTES_{vid}"),
             InlineKeyboardButton("📜 היסטוריה", callback_data=f"VUSERS_HISTORY_{vid}"),
         ],
-        [
-            InlineKeyboardButton("🔙 חזרה לרשימה", callback_data="VUSERS_LIST"),
-        ],
+    ]
+    
+    # הוסף כפתור מחיקת תיק אימות רק אם המשתמש לא מאומת (🔴 או 🚫)
+    if status_value != "approved":
+       keyboard_buttons.append([
+           InlineKeyboardButton("🗑️ מחק תיק אימות", callback_data=f"VUSERS_DELETE_DOS_{vid}"),
+       ])
+    
+    keyboard_buttons.append([
+       InlineKeyboardButton("🔙 חזרה לרשימה", callback_data="VUSERS_LIST"),
     ])
 
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+
     await update.callback_query.edit_message_text(
-        text=text, reply_markup=keyboard, parse_mode="HTML"
+       text=text, reply_markup=keyboard, parse_mode="HTML"
     )
 
 
@@ -1497,6 +1518,73 @@ async def _execute_revoke(
         ])
     else:
         msg      = "❌ שגיאה בביטול האימות."
+        keyboard = _back_to_view_kb(vid)
+
+    await update.callback_query.edit_message_text(
+        text=msg, reply_markup=keyboard, parse_mode="HTML"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# מחיקת תיק אימות
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _confirm_delete_dossier(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+    name = v["full_name"] or v.get("username") or str(v["telegram_id"])
+
+    await update.callback_query.edit_message_text(
+        text=(
+            f"🗑️ <b>מחיקת תיק אימות</b>\n\n"
+            f"משתמש: <b>{name}</b>\n\n"
+            f"פעולה זו תמחק:\n"
+            f"• כל רשומות האימות של המשתמש\n"
+            f"• כל שיחות האימות\n"
+            f"• כל הודעות שיחות האימות\n\n"
+            f"<b>המשתמש עצמו לא יימחק</b> והוא יוכל להתחיל אימות חדש.\n\n"
+            f"האם להמשיך?"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, מחק תיק", callback_data=f"VUSERS_DELETE_DOS_CONFIRM_{vid}")],
+            [InlineKeyboardButton("❌ ביטול",         callback_data=f"VUSERS_VIEW_{vid}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _execute_delete_dossier(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+    
+    telegram_id = v["telegram_id"]
+    
+    try:
+        success = delete_verification_dossier(telegram_id)
+        
+        if success:
+            msg = (
+                "✅ <b>תיק האימות נמחק.</b>\n\n"
+                f"כל הרשומות, שיחות והודעות של המשתמש נמחקו.\n"
+                f"המשתמש עדיין קיים במערכת ויכול להגיש בקשת אימות חדשה."
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 חזרה לרשימה", callback_data="VUSERS_LIST")],
+            ])
+        else:
+            msg      = "❌ שגיאה במחיקת תיק האימות."
+            keyboard = _back_to_view_kb(vid)
+    except Exception as exc:
+        logger.exception("_execute_delete_dossier failed for telegram_id=%s: %s", telegram_id, exc)
+        msg      = f"❌ שגיאה: {exc}"
         keyboard = _back_to_view_kb(vid)
 
     await update.callback_query.edit_message_text(

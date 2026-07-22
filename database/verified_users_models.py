@@ -107,6 +107,32 @@ def init_verified_users_db() -> None:
             )
         """)
 
+        # ── שיחות אימות ────────────────────────────────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS verification_chats (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id     INTEGER NOT NULL,
+                verification_id INTEGER NOT NULL,
+                opened_by       INTEGER NOT NULL,
+                is_open         INTEGER DEFAULT 1,
+                created_at      TEXT DEFAULT (datetime('now')),
+                closed_at       TEXT
+            )
+        """)
+
+        # ── הודעות שיחות אימות ─────────────────────────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS verification_chat_messages (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id         INTEGER NOT NULL,
+                sender_role     TEXT NOT NULL,
+                message_type    TEXT NOT NULL,
+                content_text    TEXT,
+                file_id         TEXT,
+                created_at      TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # ── לוג פעולות ניהוליות ───────────────────────────────────────────────
         # מתעד פעולות שאין להן טבלה ייעודית: חסימה, שחרור חסימה, ביטול אימות.
         cursor.execute("""

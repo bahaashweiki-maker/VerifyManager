@@ -760,6 +760,39 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
 # עזר
 # ─────────────────────────────────────────────────────────────────────────────
 
+def delete_verification_dossier(telegram_id: int) -> bool:
+    """מחק את כל תיק האימות של משתמש: רשומות אימות, שיחות, והודעות."""
+    try:
+        with get_connection() as conn:
+            # מחק הודעות שיחות אימות
+            conn.execute(
+                """
+                DELETE FROM verification_chat_messages
+                WHERE chat_id IN (
+                    SELECT id FROM verification_chats
+                    WHERE telegram_id = ?
+                )
+                """,
+                (telegram_id,),
+            )
+            # מחק שיחות אימות
+            conn.execute(
+                "DELETE FROM verification_chats WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            # מחק רשומות אימות
+            conn.execute(
+                "DELETE FROM verifications WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            conn.commit()
+        logger.info("delete_verification_dossier(%s) completed successfully", telegram_id)
+        return True
+    except Exception as exc:
+        logger.error("delete_verification_dossier(%s) failed: %s", telegram_id, exc)
+        return False
+
+
 def _log_action(
     telegram_id: int, action: str, performed_by: int = None
 ) -> None:
