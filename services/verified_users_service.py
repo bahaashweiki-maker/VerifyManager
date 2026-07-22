@@ -184,10 +184,30 @@ def revoke_verification(verification_id: int, performed_by: int = None) -> bool:
                 "SELECT telegram_id FROM verifications WHERE id = ?",
                 (verification_id,),
             ).fetchone()
+
+            telegram_id = row[0] if row else None
             conn.execute(
-                "UPDATE verifications SET status = 'rejected' WHERE id = ?",
+                "UPDATE verifications SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (verification_id,),
             )
+
+            # הסרת גישות שניתנו למשתמש מאומת:
+            # - סוג משתמש (מבטל קטלוגים אוטומטיים לפי audience)
+            # - הרשאות user.* ו-catalog.* (כולל הקצאות ידניות לקטלוגים)
+            if telegram_id is not None:
+                conn.execute(
+                    "DELETE FROM user_type_assignments WHERE telegram_id = ?",
+                    (telegram_id,),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM user_permissions
+                    WHERE telegram_id = ?
+                      AND (permission LIKE 'user.%' OR permission LIKE 'catalog.%')
+                    """,
+                    (telegram_id,),
+                )
+
             conn.commit()
         if row:
             _log_action(row[0], "revoke", performed_by=performed_by)
