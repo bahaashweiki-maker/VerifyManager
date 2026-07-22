@@ -394,9 +394,10 @@ async def _show_users_list(
     for u in users:
         name  = u["full_name"] or u["username"] or "משתמש לא ידוע"
         tkey  = get_user_type(u["telegram_id"])
+        status_emoji = "🟢" if u.get("status") == "approved" else ("🚫" if u.get("status") == "blocked" else "🔴")
         emoji = USER_TYPES.get(tkey, {}).get("emoji", "👤")
         buttons.append([InlineKeyboardButton(
-            f"{emoji} {name}",
+            f"{status_emoji} {emoji} {name}",
             callback_data=f"VUSERS_VIEW_{u['id']}",
         )])
 
@@ -442,7 +443,13 @@ async def _show_user_view(
         f"⏸️ מושעה עד: {_fmt_date(suspension['suspended_until']) if suspension['suspended_until'] else 'קבוע'}\n"
         if suspension else "✅ לא מושעה\n"
     )
-    block_line = "🚫 חסום\n" if is_blocked else ""
+    status_value = v.get("status")
+    if status_value == "approved":
+        status_line = "🟢 מאומת\n"
+    elif status_value == "blocked":
+        status_line = "🚫 חסום\n"
+    else:
+        status_line = "🔴 לא מאומת\n"
 
     text = (
         f"👤 <b>{name}</b>\n"
@@ -450,9 +457,9 @@ async def _show_user_view(
         f"🆔 <code>{tgid}</code>\n"
         f"📅 אומת: {date}\n"
         f"🏷️ סוג: <b>{type_display}</b>\n\n"
+        f"{status_line}"
         f"⚠️ אזהרות: <b>{warn_count}</b>\n"
         f"{suspend_line}"
-        f"{block_line}"
     )
 
     block_btn = (

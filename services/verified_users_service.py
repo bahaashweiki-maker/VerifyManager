@@ -79,7 +79,12 @@ def get_all_verified_users() -> list:
             FROM verifications v
             LEFT JOIN user_type_assignments uta
                 ON uta.telegram_id = v.telegram_id
-            WHERE v.status IN ('approved', 'blocked')
+            WHERE v.id IN (
+                SELECT MAX(id)
+                FROM verifications
+                WHERE status IN ('approved', 'blocked', 'rejected')
+                GROUP BY telegram_id
+            )
             ORDER BY v.created_at DESC
         """)
         return cur.fetchall()
@@ -87,9 +92,15 @@ def get_all_verified_users() -> list:
 
 def get_verified_users_count() -> int:
     with get_connection() as conn:
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM verifications WHERE status IN ('approved','blocked')"
-        )
+        cur = conn.execute("""
+            SELECT COUNT(*)
+            FROM (
+                SELECT MAX(id) as id
+                FROM verifications
+                WHERE status IN ('approved','blocked','rejected')
+                GROUP BY telegram_id
+            )
+        """)
         return cur.fetchone()[0]
 
 
