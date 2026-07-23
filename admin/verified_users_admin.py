@@ -111,6 +111,16 @@ from services.verified_users_service import (
     get_user_history,
 )
 
+from services.verification_chats_service import (
+    create_verification_chat,
+    get_user_verification_chats,
+    get_verification_chat,
+    close_verification_chat,
+    add_verification_chat_message,
+    get_verification_chat_messages,
+    get_verification_chat_message,
+)
+
 logger = logging.getLogger(__name__)
 
 # ─── State keys ───────────────────────────────────────────────────────────────
@@ -124,6 +134,11 @@ _AWAIT_WARN     = "VUSERS_AWAIT_WARN"
 _AWAIT_MSG      = "VUSERS_AWAIT_MSG"
 _AWAIT_NOTE     = "VUSERS_AWAIT_NOTE"
 _AWAIT_CAT_NAME = "VUSERS_AWAIT_CAT_NAME"
+_AWAIT_CHAT_MSG = "VCHAT_AWAIT_MSG"
+
+# ── שיחות אימות — state keys ───────────────────────────────────────────────────
+_VCHAT_VID = "vchat_vid"
+_VCHAT_ID  = "vchat_id"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -337,6 +352,46 @@ async def verified_users_route(
         vid = int(data[len("VUSERS_DELETE_DOS_"):])
         return await _confirm_delete_dossier(update, context, vid)
 
+    # ── שיחות אימות ───────────────────────────────────────────────────────────
+    if data.startswith("VCHAT_MEDIA_BACK_"):
+        suffix = data[len("VCHAT_MEDIA_BACK_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _back_from_chat_media(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_MEDIA_"):
+        suffix = data[len("VCHAT_MEDIA_"):]
+        parts = suffix.split("_")
+        vid = int(parts[0]); chat_id = int(parts[1]); msg_id = int(parts[2])
+        return await _show_chat_media(update, context, vid, chat_id, msg_id)
+
+    if data.startswith("VCHAT_CLOSE_OK_"):
+        suffix = data[len("VCHAT_CLOSE_OK_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _execute_close_chat(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_CLOSE_"):
+        suffix = data[len("VCHAT_CLOSE_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _confirm_close_chat(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_SEND_"):
+        suffix = data[len("VCHAT_SEND_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _prompt_send_chat_message(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_VIEW_"):
+        suffix = data[len("VCHAT_VIEW_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _show_chat_messages(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_OPEN_"):
+        vid = int(data[len("VCHAT_OPEN_"):])
+        return await _open_verification_chat(update, context, vid)
+
+    if data.startswith("VCHAT_LIST_"):
+        vid = int(data[len("VCHAT_LIST_"):])
+        return await _show_verification_chats(update, context, vid)
+
     if data == "VUSERS_CANCEL":
         return await _cancel_input(update, context)
 
@@ -390,6 +445,8 @@ async def handle_verified_users_input(
         await _process_add_note(update, context, text)
     elif state == _AWAIT_CAT_NAME:
         await _process_new_catalog(update, context, text)
+    elif state == _AWAIT_CHAT_MSG:
+        await _process_send_chat_message(update, context, text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -507,21 +564,23 @@ async def _show_user_view(
             InlineKeyboardButton("📜 היסטוריה", callback_data=f"VUSERS_HISTORY_{vid}"),
         ],
     ]
-    
-    # הוסף כפתור מחיקת תיק אימות רק אם המשתמש לא מאומת (🔴 או 🚫)
-    if status_value != "approved":
-       keyboard_buttons.append([
-           InlineKeyboardButton("🗑️ מחק תיק אימות", callback_data=f"VUSERS_DELETE_DOS_{vid}"),
-       ])
-    
+
     keyboard_buttons.append([
-       InlineKeyboardButton("🔙 חזרה לרשימה", callback_data="VUSERS_LIST"),
+        InlineKeyboardButton("💬 שיחות אימות", callback_data=f"VCHAT_LIST_{vid}"),
+    ])
+
+    keyboard_buttons.append([
+        InlineKeyboardButton("🗑️ מחק תיק אימות", callback_data=f"VUSERS_DELETE_DOS_{vid}"),
+    ])
+
+    keyboard_buttons.append([
+        InlineKeyboardButton("🔙 חזרה לרשימה", callback_data="VUSERS_LIST"),
     ])
 
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
     await update.callback_query.edit_message_text(
-       text=text, reply_markup=keyboard, parse_mode="HTML"
+        text=text, reply_markup=keyboard, parse_mode="HTML"
     )
 
 
@@ -1612,7 +1671,7 @@ async def _cancel_input(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in (_STATE, _VID, _CID, _CHAT_ID, _MSG_ID):
+    for key in (_STATE, _VID, _CID, _CHAT_ID, _MSG_ID, _VCHAT_VID, _VCHAT_ID):
         context.user_data.pop(key, None)
 
 
@@ -1623,6 +1682,373 @@ def _fmt_date(ts) -> str:
         return f"{ts[8:10]}.{ts[5:7]}.{ts[:4]}"
     except Exception:
         return str(ts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# שיחות אימות
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_chat_view(vid: int, chat_id: int):
+    """בונה (text, keyboard) לתצוגת שיחה."""
+    v    = get_verified_user_by_id(vid)
+    chat = get_verification_chat(chat_id)
+    if not v or not chat:
+        return "⚠️ שיחה לא נמצאה.", InlineKeyboardMarkup([[]])
+
+    messages = get_verification_chat_messages(chat_id)
+    name     = v["full_name"] or str(v["telegram_id"])
+
+    lines = [f"💬 <b>שיחה עם {name}</b>"]
+    if not chat["is_open"]:
+        lines.append("🔴 השיחה סגורה")
+    lines.append("")
+
+    media_buttons = []
+    for msg in messages[-20:]:
+        role = "👤 משתמש" if msg["sender_role"] == "user" else "🛡 אדמין"
+        mtype = msg["message_type"]
+        if mtype == "text":
+            txt = (msg.get("content_text") or "")
+            if len(txt) > 80:
+                txt = txt[:77] + "..."
+            lines.append(f"<b>{role}:</b> {txt}")
+        elif mtype == "photo":
+            lines.append(f"<b>{role}:</b> 📷 תמונה")
+            media_buttons.append([InlineKeyboardButton(
+                f"📷 הצג ({msg['id']})",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "video":
+            lines.append(f"<b>{role}:</b> 🎥 סרטון")
+            media_buttons.append([InlineKeyboardButton(
+                f"🎥 הצג ({msg['id']})",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "document":
+            lines.append(f"<b>{role}:</b> 📎 מסמך")
+
+    if not messages:
+        lines.append("אין הודעות עדיין.")
+
+    action_rows = []
+    if chat["is_open"]:
+        action_rows.append([
+            InlineKeyboardButton("✉️ שלח הודעה", callback_data=f"VCHAT_SEND_{vid}_{chat_id}"),
+            InlineKeyboardButton("🔒 סגור שיחה", callback_data=f"VCHAT_CLOSE_{vid}_{chat_id}"),
+        ])
+
+    keyboard = InlineKeyboardMarkup(
+        action_rows + media_buttons + [[InlineKeyboardButton("🔙 חזרה", callback_data=f"VCHAT_LIST_{vid}")]]
+    )
+    return "\n".join(lines), keyboard
+
+
+async def _show_verification_chats(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    _clear_state(context)
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+
+    chats = get_user_verification_chats(v["telegram_id"])
+    name  = v["full_name"] or str(v["telegram_id"])
+
+    buttons = []
+    for chat in reversed(chats):
+        status = "🟢" if chat["is_open"] else "🔴"
+        date   = _fmt_date(chat["created_at"])
+        buttons.append([InlineKeyboardButton(
+            f"{status} שיחה מ-{date}",
+            callback_data=f"VCHAT_VIEW_{vid}_{chat['id']}",
+        )])
+
+    buttons.append([InlineKeyboardButton("💬 פתח שיחה חדשה", callback_data=f"VCHAT_OPEN_{vid}")])
+    buttons.append([InlineKeyboardButton("🔙 חזרה לפרופיל",  callback_data=f"VUSERS_VIEW_{vid}")])
+
+    await update.callback_query.edit_message_text(
+        text=(
+            f"💬 <b>שיחות אימות</b>\n<b>{name}</b>\n\n"
+            + ("בחר שיחה:" if chats else "אין שיחות עדיין.")
+        ),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+
+
+async def _open_verification_chat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+
+    admin_id = update.callback_query.from_user.id
+    chat_id  = create_verification_chat(v["telegram_id"], vid, admin_id)
+    if not chat_id:
+        await update.callback_query.answer("❌ שגיאה בפתיחת שיחה.", show_alert=True)
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=v["telegram_id"],
+            text=(
+                "🛡️ <b>מרכז האימות</b>\n\n"
+                "שלום,\n"
+                "ערוץ התקשורת המאובטח שלך עם צוות האימות הופעל.\n\n"
+                "כעת ניתן להעביר הודעות, מסמכים וקבצים עד לסיום הטיפול.\n\n"
+                "✨ אנו זמינים עבורך לאורך תהליך האימות.\n\n"
+                "🔐 צוות האימות"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.exception("_open_verification_chat notify user failed (vid=%s, chat_id=%s): %s", vid, chat_id, exc)
+        close_verification_chat(chat_id)
+        await update.callback_query.answer("❌ פתיחת השיחה נכשלה: לא ניתן לשלוח הודעת פתיחה למשתמש.", show_alert=True)
+        return
+
+    add_verification_chat_message(chat_id, "admin", "text", content_text="💬 שיחה נפתחה.")
+
+    text, keyboard = _build_chat_view(vid, chat_id)
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _show_chat_messages(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    _clear_state(context)
+    text, keyboard = _build_chat_view(vid, chat_id)
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _prompt_send_chat_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    context.user_data[_STATE]     = _AWAIT_CHAT_MSG
+    context.user_data[_VCHAT_VID] = vid
+    context.user_data[_VCHAT_ID]  = chat_id
+    context.user_data[_CHAT_ID]   = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID]    = update.callback_query.message.message_id
+
+    await update.callback_query.edit_message_text(
+        text="✉️ <b>שלח הודעה למשתמש</b>\n\nכתוב את ההודעה:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ ביטול", callback_data=f"VCHAT_VIEW_{vid}_{chat_id}"),
+        ]]),
+        parse_mode="HTML",
+    )
+
+
+async def _process_send_chat_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    vid       = context.user_data.get(_VCHAT_VID)
+    chat_id   = context.user_data.get(_VCHAT_ID)
+    tg_chat   = context.user_data.get(_CHAT_ID)
+    msg_id    = context.user_data.get(_MSG_ID)
+    _clear_state(context)
+
+    if not vid or not chat_id:
+        return
+
+    v = get_verified_user_by_id(vid)
+    if not v:
+        return
+
+    add_verification_chat_message(chat_id, "admin", "text", content_text=text)
+
+    try:
+        await context.bot.send_message(
+            chat_id=v["telegram_id"],
+            text=f"💬 <b>הודעה מנציג:</b>\n\n{text}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    chat_text, keyboard = _build_chat_view(vid, chat_id)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=tg_chat,
+            message_id=msg_id,
+            text=chat_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except Exception:
+        await context.bot.send_message(
+            chat_id=tg_chat,
+            text=chat_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+
+
+async def _show_chat_media(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int, msg_id: int
+) -> None:
+    msg = get_verification_chat_message(msg_id)
+    if not msg or not msg.get("file_id"):
+        await update.callback_query.answer("⚠️ מדיה לא נמצאה.", show_alert=True)
+        return
+
+    back_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬅️ חזור", callback_data=f"VCHAT_MEDIA_BACK_{vid}_{chat_id}"),
+    ]])
+
+    if msg["message_type"] == "photo":
+        await context.bot.send_photo(
+            chat_id=update.callback_query.message.chat_id,
+            photo=msg["file_id"],
+            caption="📷 תמונה מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "video":
+        await context.bot.send_video(
+            chat_id=update.callback_query.message.chat_id,
+            video=msg["file_id"],
+            caption="🎥 סרטון מהשיחה",
+            reply_markup=back_kb,
+        )
+
+
+async def _back_from_chat_media(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    """מוחק את הודעת המדיה ושולח מחדש את מסך השיחה."""
+    try:
+        await update.callback_query.message.delete()
+    except Exception:
+        pass
+
+    chat_text, keyboard = _build_chat_view(vid, chat_id)
+    await context.bot.send_message(
+        chat_id=update.callback_query.message.chat_id,
+        text=chat_text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def _confirm_close_chat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    await update.callback_query.edit_message_text(
+        text="🔒 <b>סגירת שיחה</b>\n\nהאם לסגור את השיחה?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, סגור", callback_data=f"VCHAT_CLOSE_OK_{vid}_{chat_id}")],
+            [InlineKeyboardButton("❌ ביטול",     callback_data=f"VCHAT_VIEW_{vid}_{chat_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _execute_close_chat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    v = get_verified_user_by_id(vid)
+    chat = get_verification_chat(chat_id)
+    if not chat:
+        await update.callback_query.answer("⚠️ שיחה לא נמצאה.", show_alert=True)
+        return
+
+    if not close_verification_chat(chat_id):
+        await update.callback_query.answer("❌ שגיאה בסגירת השיחה.", show_alert=True)
+        return
+
+    # ודא שאין שיחות פתוחות נוספות לאותו אימות
+    if v:
+        chats = get_user_verification_chats(v["telegram_id"])
+        for c in chats:
+            if c.get("verification_id") == vid and c.get("is_open"):
+                close_verification_chat(c["id"])
+
+    if v:
+        try:
+            await context.bot.send_message(
+                chat_id=v["telegram_id"],
+                text=(
+                    "🛡️ <b>מרכז האימות</b>\n\n"
+                    "הטיפול בפנייה הסתיים וערוץ התקשורת נסגר.\n\n"
+                    "במידת הצורך, צוות האימות ייצור איתך קשר מחדש.\n\n"
+                    "🙏 תודה על שיתוף הפעולה.\n\n"
+                    "🔐 צוות האימות"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.exception("_execute_close_chat notify user failed (vid=%s, chat_id=%s): %s", vid, chat_id, exc)
+            await update.callback_query.answer("⚠️ השיחה נסגרה, אך הודעת הסגירה למשתמש לא נשלחה.", show_alert=True)
+
+    await update.callback_query.edit_message_text(
+        text="✅ <b>השיחה נסגרה.</b>",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 חזרה לשיחות", callback_data=f"VCHAT_LIST_{vid}"),
+        ]]),
+        parse_mode="HTML",
+    )
+
+
+async def handle_verification_chat_user_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    """מטפל בהודעת משתמש כשיש לו שיחה פתוחה. מחזיר True אם ההודעה טופלה."""
+    user_id = update.message.from_user.id
+    chats   = get_user_verification_chats(user_id)
+    open_chats = [c for c in chats if c.get("is_open")]
+
+    if not open_chats:
+        return False
+
+    active_chat = open_chats[-1]
+    chat_id     = active_chat["id"]
+    msg         = update.message
+
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        add_verification_chat_message(chat_id, "user", "photo", file_id=file_id)
+        label = "📷 תמונה"
+    elif msg.video:
+        file_id = msg.video.file_id
+        add_verification_chat_message(chat_id, "user", "video", file_id=file_id)
+        label = "🎥 סרטון"
+    elif msg.document:
+        file_id = msg.document.file_id
+        add_verification_chat_message(chat_id, "user", "document", file_id=file_id)
+        label = "📎 מסמך"
+    elif msg.text:
+        add_verification_chat_message(chat_id, "user", "text", content_text=msg.text)
+        label = f"💬 {msg.text[:100]}"
+    else:
+        return False
+
+    try:
+        await msg.reply_text("✅ ההודעה נשלחה לנציג.")
+    except Exception:
+        pass
+
+    admin_id = active_chat["opened_by"]
+    vid      = active_chat["verification_id"]
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                f"📩 <b>הודעה חדשה בשיחה</b>\n\n"
+                f"מאת: <code>{user_id}</code>\n"
+                f"{label}"
+            ),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂 פתח שיחה", callback_data=f"VCHAT_VIEW_{vid}_{chat_id}"),
+            ]]),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    return True
 
 
 def _split_two_ids(suffix: str) -> tuple:

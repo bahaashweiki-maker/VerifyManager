@@ -25,7 +25,11 @@ from admin.verify_admin import verify_admin_menu
 from admin.verify_media import verify_media_menu
 from admin.publishing_admin import build_publishing_handler
 from admin.admin_manager import admin_manager_route, handle_admin_mgr_input
-from admin.verified_users_admin import verified_users_route, handle_verified_users_input
+from admin.verified_users_admin import (
+    verified_users_route,
+    handle_verified_users_input,
+    handle_verification_chat_user_message,
+)
 
 from database.publishing_models import init_publishing_db
 from database.permission_models import init_permissions_db
@@ -201,7 +205,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await admin_manager_route(update, context)
 
     # 6ב. ניהול מאומתים — סופר-אדמין או בעל הרשאת users.view
-    if data == "VUSERS_LIST" or data.startswith("VUSERS_"):
+    if data == "VUSERS_LIST" or data.startswith("VUSERS_") or data.startswith("VCHAT_"):
         uid = query.from_user.id
         if not is_super_admin(uid) and not has_permission(uid, "users.view"):
             await query.answer("⛔ אין לך הרשאה לנהל משתמשים.", show_alert=True)
@@ -248,9 +252,26 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # קלט ממנהל המנהלים
     if context.user_data.get("admin_mgr_state") and update.message and update.message.text:
         return await handle_admin_mgr_input(update, context)
-    # קלט ממודול ניהול מאומתים
+    # קלט ממודול ניהול מאומתים (כולל הודעה בשיחה ע"י אדמין)
     if context.user_data.get("vusers_state") and update.message and update.message.text:
         return await handle_verified_users_input(update, context)
+    # קלט ממסך האימות הישן (VERIFY_MESSAGE_) חייב להישאר מופרד ממסלול שיחות האימות
+    if update.message and update.effective_user:
+        admin_state = context.user_data.get(update.effective_user.id)
+        if (
+            isinstance(admin_state, dict)
+            and admin_state.get("mode") == "send_message"
+            and "message_verification_id" in context.user_data
+        ):
+            return await process_verify(update, context)
+    # הודעת משתמש לשיחת אימות פתוחה
+    if update.message:
+        try:
+            handled = await handle_verification_chat_user_message(update, context)
+            if handled:
+                return
+        except Exception:
+            pass
     # ברירת מחדל — תהליך אימות
     await process_verify(update, context)
 
