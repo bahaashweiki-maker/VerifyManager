@@ -69,6 +69,24 @@ def close_verification_chat(chat_id: int) -> bool:
         return False
 
 
+def delete_verification_chat(chat_id: int) -> bool:
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM verification_chat_messages WHERE chat_id = ?",
+                (chat_id,),
+            )
+            cur = conn.execute(
+                "DELETE FROM verification_chats WHERE id = ?",
+                (chat_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as exc:
+        logger.error("delete_verification_chat failed: %s", exc)
+        return False
+
+
 def add_verification_chat_message(
     chat_id: int,
     sender_role: str,

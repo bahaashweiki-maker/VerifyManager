@@ -116,6 +116,7 @@ from services.verification_chats_service import (
     get_user_verification_chats,
     get_verification_chat,
     close_verification_chat,
+    delete_verification_chat,
     add_verification_chat_message,
     get_verification_chat_messages,
     get_verification_chat_message,
@@ -373,6 +374,11 @@ async def verified_users_route(
         suffix = data[len("VCHAT_CLOSE_"):]
         vid, chat_id = _split_two_ids(suffix)
         return await _confirm_close_chat(update, context, vid, chat_id)
+
+    if data.startswith("VCHAT_DELETE_"):
+        suffix = data[len("VCHAT_DELETE_"):]
+        vid, chat_id = _split_two_ids(suffix)
+        return await _delete_closed_chat(update, context, vid, chat_id)
 
     if data.startswith("VCHAT_SEND_"):
         suffix = data[len("VCHAT_SEND_"):]
@@ -1736,6 +1742,10 @@ def _build_chat_view(vid: int, chat_id: int):
             InlineKeyboardButton("✉️ שלח הודעה", callback_data=f"VCHAT_SEND_{vid}_{chat_id}"),
             InlineKeyboardButton("🔒 סגור שיחה", callback_data=f"VCHAT_CLOSE_{vid}_{chat_id}"),
         ])
+    else:
+        action_rows.append([
+            InlineKeyboardButton("🗑️ מחק שיחה", callback_data=f"VCHAT_DELETE_{vid}_{chat_id}"),
+        ])
 
     keyboard = InlineKeyboardMarkup(
         action_rows + media_buttons + [[InlineKeyboardButton("🔙 חזרה", callback_data=f"VCHAT_LIST_{vid}")]]
@@ -1757,10 +1767,10 @@ async def _show_verification_chats(
 
     buttons = []
     for chat in reversed(chats):
-        status = "🟢" if chat["is_open"] else "🔴"
         date   = _fmt_date(chat["created_at"])
+        title  = "💬 שיחה פעילה" if chat["is_open"] else "🔏 שיחה הסתיימה"
         buttons.append([InlineKeyboardButton(
-            f"{status} שיחה מ-{date}",
+            f"{title} • {date}",
             callback_data=f"VCHAT_VIEW_{vid}_{chat['id']}",
         )])
 
@@ -1992,6 +2002,23 @@ async def _execute_close_chat(
     )
 
 
+async def _delete_closed_chat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int, chat_id: int
+) -> None:
+    chat = get_verification_chat(chat_id)
+    if not chat:
+        await update.callback_query.answer("⚠️ שיחה לא נמצאה.", show_alert=True)
+        return
+    if chat.get("is_open"):
+        await update.callback_query.answer("⚠️ ניתן למחוק רק שיחה סגורה.", show_alert=True)
+        return
+    if not delete_verification_chat(chat_id):
+        await update.callback_query.answer("❌ שגיאה במחיקת השיחה.", show_alert=True)
+        return
+    await update.callback_query.answer("🗑️ השיחה נמחקה.")
+    await _show_verification_chats(update, context, vid)
+
+
 async def handle_verification_chat_user_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> bool:
@@ -2011,17 +2038,26 @@ async def handle_verification_chat_user_message(
         file_id = msg.photo[-1].file_id
         add_verification_chat_message(chat_id, "user", "photo", file_id=file_id)
         label = "📷 תמונה"
+        forward_video_note_file_id = None
     elif msg.video:
         file_id = msg.video.file_id
         add_verification_chat_message(chat_id, "user", "video", file_id=file_id)
         label = "🎥 סרטון"
+        forward_video_note_file_id = None
+    elif msg.video_note:
+        file_id = msg.video_note.file_id
+        add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id)
+        label = "⭕️ Video Note"
+        forward_video_note_file_id = file_id
     elif msg.document:
         file_id = msg.document.file_id
         add_verification_chat_message(chat_id, "user", "document", file_id=file_id)
         label = "📎 מסמך"
+        forward_video_note_file_id = None
     elif msg.text:
         add_verification_chat_message(chat_id, "user", "text", content_text=msg.text)
         label = f"💬 {msg.text[:100]}"
+        forward_video_note_file_id = None
     else:
         return False
 
@@ -2033,6 +2069,14 @@ async def handle_verification_chat_user_message(
     admin_id = active_chat["opened_by"]
     vid      = active_chat["verification_id"]
     try:
+        if forward_video_note_file_id:
+            await context.bot.send_video_note(
+                chat_id=admin_id,
+                video_note=forward_video_note_file_id,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📂 פתח שיחה", callback_data=f"VCHAT_VIEW_{vid}_{chat_id}"),
+                ]]),
+            )
         await context.bot.send_message(
             chat_id=admin_id,
             text=(
