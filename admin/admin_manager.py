@@ -27,6 +27,7 @@ state ב-context.user_data:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -35,7 +36,8 @@ from config.permissions import PERMISSIONS
 from services.admin_service import (
     promote_to_admin,
     demote_admin,
-    get_all_admins,
+    get_all_admin_profiles,
+    get_admin_profile,
     grant_admin_permission,
     revoke_admin_permission,
     get_admin_permissions,
@@ -179,16 +181,28 @@ async def _process_add_admin(
         return
 
     success = promote_to_admin(target_id, granted_by=caller_id)
+    actor_name = _actor_name(update)
+    action_date, action_time = _now_date_time()
+    target_profile = get_admin_profile(target_id)
 
     if success:
         msg = (
             f"✅ <b>מנהל נוסף בהצלחה</b>\n\n"
+            f"שם: <b>{target_profile['display_name']}</b>\n"
             f"Telegram ID: <code>{target_id}</code>\n"
             f"הרשאת בסיס <code>admin</code> הוקצתה.\n\n"
+            f"👤 בוצע על ידי: <b>{actor_name}</b>\n"
+            f"📅 תאריך: <b>{action_date}</b>\n"
+            f"🕒 שעה: <b>{action_time}</b>\n\n"
             f"<i>לניהול הרשאות נוספות — כנס לפרטי המנהל.</i>"
         )
     else:
-        msg = "❌ שגיאה בהוספת המנהל. נסה שנית."
+        msg = (
+            "❌ שגיאה בהוספת המנהל. נסה שנית.\n\n"
+            f"👤 בוצע על ידי: <b>{actor_name}</b>\n"
+            f"📅 תאריך: <b>{action_date}</b>\n"
+            f"🕒 שעה: <b>{action_time}</b>"
+        )
 
     await _edit_stored(context, chat_id, msg_id, text=msg, keyboard=_back_to_managers_kb())
 
@@ -199,7 +213,7 @@ async def _process_add_admin(
 
 async def _show_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_state(context)
-    admins = get_all_admins()
+    admins = get_all_admin_profiles()
 
     if not admins:
         keyboard = InlineKeyboardMarkup([
@@ -212,13 +226,15 @@ async def _show_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    buttons = [
-        [InlineKeyboardButton(
-            f"👤 {admin_id}",
-            callback_data=f"ADMIN_MGR_VIEW_{admin_id}",
-        )]
-        for admin_id in admins
-    ]
+    buttons = []
+    for admin in admins:
+        display_name = await _admin_display_name(context, admin)
+        buttons.append([
+            InlineKeyboardButton(
+                f"👤 {display_name}",
+                callback_data=f"ADMIN_MGR_VIEW_{admin['telegram_id']}",
+            ),
+        ])
     buttons.append([InlineKeyboardButton("🔙 חזרה", callback_data="ADMIN_MANAGERS")])
 
     await update.callback_query.edit_message_text(
@@ -236,7 +252,9 @@ async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     _clear_state(context)
     data      = update.callback_query.data
     target_id = int(data[len("ADMIN_MGR_VIEW_"):])
+    profile   = get_admin_profile(target_id)
     perms     = get_admin_permissions(target_id)
+    display_name = await _admin_display_name(context, profile)
 
     context.user_data[_VIEWED_PERMS] = perms
 
@@ -252,13 +270,26 @@ async def _show_admin_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     admin_count = len(perms_lines)
     perms_text  = "\n".join(perms_lines) if perms_lines else "  <i>אין הרשאות מנהל</i>"
+    granted_at  = profile.get("granted_at")
+    granted_date, granted_time = _fmt_date_time(granted_at)
+
+    details_lines = [
+        f"👤 <b>{display_name}</b>",
+    ]
+    if profile.get("username"):
+        details_lines.append(f"🔗 Username: <b>@{profile['username']}</b>")
+    details_lines.append(f"🆔 <code>{target_id}</code>")
+    if granted_at:
+        details_lines.append(f"📅 תאריך מינוי למנהל: <b>{granted_date}</b>")
+        details_lines.append(f"🕒 שעת המינוי למנהל: <b>{granted_time}</b>")
 
     text = (
-        f"👤 <b>מנהל</b>: <code>{target_id}</code>\n\n"
-        f"<b>הרשאות ({admin_count}):</b>\n{perms_text}"
+        "\n".join(details_lines)
+        + f"\n\n<b>הרשאות ({admin_count}):</b>\n{perms_text}"
     )
 
     buttons = [
+        [InlineKeyboardButton("💬 פנייה למנהל", url=f"tg://user?id={target_id}")],
         [InlineKeyboardButton("🔐 ניהול הרשאות",  callback_data=f"ADMIN_MGR_PERMS_{target_id}")],
         [InlineKeyboardButton("🚫 הורד ממנהל",    callback_data=f"ADMIN_MGR_DEMOTE_{target_id}")],
         [InlineKeyboardButton("🔙 חזרה",          callback_data="ADMIN_MGR_LIST")],
@@ -287,10 +318,14 @@ async def _show_permissions_screen(update: Update, context: ContextTypes.DEFAULT
 
 
 async def _render_permissions_screen(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, target_id: int
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    target_id: int,
+    action_meta: str = "",
 ) -> None:
     """רינדור מסך ההרשאות לפי target_id — נקרא ישירות (ללא תלות ב-query.data)."""
     current_perms = set(get_admin_permissions(target_id))
+    profile = get_admin_profile(target_id)
 
     buttons = []
     for perm in PERMISSIONS:
@@ -309,10 +344,12 @@ async def _render_permissions_screen(
     await update.callback_query.edit_message_text(
         text=(
             f"🔐 <b>ניהול הרשאות</b>\n"
+            f"שם: <b>{profile['display_name']}</b>\n"
             f"Telegram ID: <code>{target_id}</code>\n\n"
             f"✅ = הרשאה פעילה  |  ❌ = הרשאה כבויה\n"
             f"לחץ על הרשאה כדי להפעיל / לבטל.\n"
             f"<i>השינויים נשמרים מיד.</i>"
+            f"{action_meta}"
         ),
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
@@ -343,8 +380,16 @@ async def _toggle_permission(update: Update, context: ContextTypes.DEFAULT_TYPE)
         grant_admin_permission(target_id, perm_key, granted_by=caller_id)
         await update.callback_query.answer(f"✅ הופעלה: {perm_key}")
 
+    actor_name = _actor_name(update)
+    action_date, action_time = _now_date_time()
+    action_meta = (
+        f"\n\n👤 עודכן על ידי: <b>{actor_name}</b>\n"
+        f"📅 תאריך: <b>{action_date}</b>\n"
+        f"🕒 שעה: <b>{action_time}</b>"
+    )
+
     # רינדור מחדש ישיר — ללא שינוי query.data (read-only)
-    await _render_permissions_screen(update, context, target_id)
+    await _render_permissions_screen(update, context, target_id, action_meta=action_meta)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -379,15 +424,27 @@ async def _execute_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     count   = demote_admin(target_id)
     success = count is True or count
+    actor_name = _actor_name(update)
+    action_date, action_time = _now_date_time()
+    target_profile = get_admin_profile(target_id)
 
     if success:
         msg = (
             f"✅ <b>מנהל הורד בהצלחה</b>\n\n"
+            f"שם: <b>{target_profile['display_name']}</b>\n"
             f"Telegram ID: <code>{target_id}</code>\n"
-            f"כל ההרשאות הוסרו."
+            f"כל ההרשאות הוסרו.\n\n"
+            f"👤 בוצע על ידי: <b>{actor_name}</b>\n"
+            f"📅 תאריך: <b>{action_date}</b>\n"
+            f"🕒 שעה: <b>{action_time}</b>"
         )
     else:
-        msg = "❌ שגיאה בהורדת המנהל. נסה שנית."
+        msg = (
+            "❌ שגיאה בהורדת המנהל. נסה שנית.\n\n"
+            f"👤 בוצע על ידי: <b>{actor_name}</b>\n"
+            f"📅 תאריך: <b>{action_date}</b>\n"
+            f"🕒 שעה: <b>{action_time}</b>"
+        )
 
     context.user_data.pop(_VIEWED_PERMS, None)
 
@@ -420,6 +477,15 @@ def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(key, None)
 
 
+def _fmt_date_time(ts: str | None) -> tuple[str, str]:
+    if not ts:
+        return "", ""
+    try:
+        return ts[8:10] + "." + ts[5:7] + "." + ts[:4], ts[11:16]
+    except Exception:
+        return "", ""
+
+
 async def _edit_stored(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int | None,
@@ -446,3 +512,40 @@ def _back_to_managers_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 חזרה לניהול מנהלים", callback_data="ADMIN_MANAGERS")],
     ])
+
+
+def _actor_name(update: Update) -> str:
+    user = update.effective_user
+    if user is None:
+        return "לא ידוע"
+    if user.full_name:
+        return user.full_name
+    if user.username:
+        return f"@{user.username}"
+    return str(user.id)
+
+
+def _now_date_time() -> tuple[str, str]:
+    now = datetime.now()
+    return now.strftime("%d.%m.%Y"), now.strftime("%H:%M")
+
+
+async def _admin_display_name(context: ContextTypes.DEFAULT_TYPE, admin_profile: dict) -> str:
+    display_name = admin_profile.get("display_name")
+    if display_name and not str(display_name).isdigit():
+        return display_name
+
+    username = admin_profile.get("username")
+    if username:
+        return f"@{username}"
+
+    try:
+        chat = await context.bot.get_chat(admin_profile["telegram_id"])
+        if chat.full_name:
+            return chat.full_name
+        if chat.username:
+            return f"@{chat.username}"
+    except Exception:
+        pass
+
+    return str(admin_profile["telegram_id"])

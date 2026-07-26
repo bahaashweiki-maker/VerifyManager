@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 
 from config.constants import ADMIN_ID
+from database.database import get_connection
 from services.permission_service import (
     has_permission,
     grant_permission,
@@ -39,6 +40,49 @@ def is_admin(telegram_id: int) -> bool:
 
 def get_all_admins() -> list[int]:
     return get_all_with_permission("admin")
+
+
+def get_admin_profile(telegram_id: int) -> dict:
+    """מחזיר פרופיל תצוגה של מנהל לפי telegram_id."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT full_name, username FROM users WHERE telegram_id = ? LIMIT 1",
+            (telegram_id,),
+        ).fetchone()
+        admin_row = conn.execute(
+            """
+            SELECT granted_at
+            FROM user_permissions
+            WHERE telegram_id = ? AND permission = 'admin'
+            ORDER BY granted_at DESC
+            LIMIT 1
+            """,
+            (telegram_id,),
+        ).fetchone()
+
+    full_name = row["full_name"] if row else None
+    username = row["username"] if row else None
+    granted_at = admin_row["granted_at"] if admin_row else None
+
+    if full_name:
+        display_name = full_name
+    elif username:
+        display_name = f"@{username}"
+    else:
+        display_name = str(telegram_id)
+
+    return {
+        "telegram_id": telegram_id,
+        "full_name": full_name,
+        "username": username,
+        "display_name": display_name,
+        "granted_at": granted_at,
+    }
+
+
+def get_all_admin_profiles() -> list[dict]:
+    """מחזיר רשימת פרופילי תצוגה לכל המנהלים הפעילים."""
+    return [get_admin_profile(admin_id) for admin_id in get_all_admins()]
 
 
 def promote_to_admin(telegram_id: int, granted_by: int | None = None) -> bool:

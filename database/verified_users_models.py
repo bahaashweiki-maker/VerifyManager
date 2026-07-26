@@ -129,9 +129,14 @@ def init_verified_users_db() -> None:
                 message_type    TEXT NOT NULL,
                 content_text    TEXT,
                 file_id         TEXT,
+                sender_id       INTEGER,
                 created_at      TEXT DEFAULT (datetime('now'))
             )
         """)
+
+        _safe_add_columns(cursor, "verification_chat_messages", [
+            ("sender_id", "INTEGER"),
+        ])
 
         # ── לוג פעולות ניהוליות ───────────────────────────────────────────────
         # מתעד פעולות שאין להן טבלה ייעודית: חסימה, שחרור חסימה, ביטול אימות.

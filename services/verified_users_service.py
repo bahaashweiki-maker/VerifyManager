@@ -295,7 +295,16 @@ def get_warnings(telegram_id: int) -> list:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
-            "SELECT * FROM user_warnings WHERE telegram_id = ? ORDER BY created_at DESC",
+            """
+            SELECT
+                w.*,
+                u.full_name AS created_by_full_name,
+                u.username  AS created_by_username
+            FROM user_warnings w
+            LEFT JOIN users u ON u.telegram_id = w.created_by
+            WHERE w.telegram_id = ?
+            ORDER BY w.created_at DESC
+            """,
             (telegram_id,),
         )
         return cur.fetchall()
@@ -305,7 +314,16 @@ def get_warning_by_id(warning_id: int) -> Optional[dict]:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
-            "SELECT * FROM user_warnings WHERE id = ?", (warning_id,)
+            """
+            SELECT
+                w.*,
+                u.full_name AS created_by_full_name,
+                u.username  AS created_by_username
+            FROM user_warnings w
+            LEFT JOIN users u ON u.telegram_id = w.created_by
+            WHERE w.id = ?
+            """,
+            (warning_id,),
         )
         return cur.fetchone()
 
@@ -643,7 +661,16 @@ def get_admin_notes(telegram_id: int) -> list:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
-            "SELECT * FROM user_admin_notes WHERE telegram_id = ? ORDER BY created_at DESC",
+            """
+            SELECT
+                n.*,
+                u.full_name AS created_by_full_name,
+                u.username  AS created_by_username
+            FROM user_admin_notes n
+            LEFT JOIN users u ON u.telegram_id = n.created_by
+            WHERE n.telegram_id = ?
+            ORDER BY n.created_at DESC
+            """,
             (telegram_id,),
         )
         return cur.fetchall()
@@ -653,7 +680,16 @@ def get_admin_note_by_id(note_id: int) -> Optional[dict]:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
-            "SELECT * FROM user_admin_notes WHERE id = ?", (note_id,)
+            """
+            SELECT
+                n.*,
+                u.full_name AS created_by_full_name,
+                u.username  AS created_by_username
+            FROM user_admin_notes n
+            LEFT JOIN users u ON u.telegram_id = n.created_by
+            WHERE n.id = ?
+            """,
+            (note_id,),
         )
         return cur.fetchone()
 
@@ -704,40 +740,105 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
         conn.row_factory = _row_factory
 
         for r in conn.execute(
-            "SELECT created_at FROM user_warnings WHERE telegram_id = ?",
+            """
+            SELECT
+                w.created_at,
+                w.created_by,
+                u.full_name AS admin_full_name,
+                u.username  AS admin_username
+            FROM user_warnings w
+            LEFT JOIN users u ON u.telegram_id = w.created_by
+            WHERE w.telegram_id = ?
+            """,
             (telegram_id,),
         ).fetchall():
-            rows.append({"type": "warning", "created_at": r["created_at"]})
+            rows.append({
+                "type": "warning",
+                "created_at": r["created_at"],
+                "admin_name": _build_admin_name(r["created_by"], r["admin_full_name"], r["admin_username"]),
+            })
 
         for r in conn.execute(
-            "SELECT created_at, duration_key, lifted_at FROM user_suspensions WHERE telegram_id = ?",
+            """
+            SELECT
+                s.created_at,
+                s.duration_key,
+                s.lifted_at,
+                s.created_by,
+                u.full_name AS admin_full_name,
+                u.username  AS admin_username
+            FROM user_suspensions s
+            LEFT JOIN users u ON u.telegram_id = s.created_by
+            WHERE s.telegram_id = ?
+            """,
             (telegram_id,),
         ).fetchall():
             rows.append({
                 "type":        "suspension",
                 "created_at":  r["created_at"],
                 "label_extra": SUSPEND_LABELS.get(r["duration_key"], r["duration_key"]),
+                "admin_name":  _build_admin_name(r["created_by"], r["admin_full_name"], r["admin_username"]),
             })
             if r["lifted_at"]:
                 rows.append({"type": "unsuspend", "created_at": r["lifted_at"]})
 
         for r in conn.execute(
-            "SELECT sent_at FROM user_messages_log WHERE telegram_id = ?",
+            """
+            SELECT
+                m.sent_at,
+                m.sent_by,
+                u.full_name AS admin_full_name,
+                u.username  AS admin_username
+            FROM user_messages_log m
+            LEFT JOIN users u ON u.telegram_id = m.sent_by
+            WHERE m.telegram_id = ?
+            """,
             (telegram_id,),
         ).fetchall():
-            rows.append({"type": "message", "created_at": r["sent_at"]})
+            rows.append({
+                "type": "message",
+                "created_at": r["sent_at"],
+                "admin_name": _build_admin_name(r["sent_by"], r["admin_full_name"], r["admin_username"]),
+            })
 
         for r in conn.execute(
-            "SELECT created_at FROM user_admin_notes WHERE telegram_id = ?",
+            """
+            SELECT
+                n.created_at,
+                n.created_by,
+                u.full_name AS admin_full_name,
+                u.username  AS admin_username
+            FROM user_admin_notes n
+            LEFT JOIN users u ON u.telegram_id = n.created_by
+            WHERE n.telegram_id = ?
+            """,
             (telegram_id,),
         ).fetchall():
-            rows.append({"type": "note", "created_at": r["created_at"]})
+            rows.append({
+                "type": "note",
+                "created_at": r["created_at"],
+                "admin_name": _build_admin_name(r["created_by"], r["admin_full_name"], r["admin_username"]),
+            })
 
         for r in conn.execute(
-            "SELECT action, created_at FROM user_action_log WHERE telegram_id = ?",
+            """
+            SELECT
+                a.action,
+                a.created_at,
+                a.performed_by,
+                u.full_name AS admin_full_name,
+                u.username  AS admin_username
+            FROM user_action_log a
+            LEFT JOIN users u ON u.telegram_id = a.performed_by
+            WHERE a.telegram_id = ?
+            """,
             (telegram_id,),
         ).fetchall():
-            rows.append({"type": r["action"], "created_at": r["created_at"]})
+            rows.append({
+                "type": r["action"],
+                "created_at": r["created_at"],
+                "admin_name": _build_admin_name(r["performed_by"], r["admin_full_name"], r["admin_username"]),
+            })
 
     rows.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
@@ -751,6 +852,7 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             "icon":       _HISTORY_ICON.get(t, "•"),
             "label":      label,
             "created_at": r.get("created_at", ""),
+            "admin_name": r.get("admin_name"),
         })
 
     return result
@@ -814,6 +916,16 @@ def _log_action(
 def _row_factory(cursor, row):
     fields = [d[0] for d in cursor.description]
     return dict(zip(fields, row))
+
+
+def _build_admin_name(admin_id: int | None, full_name: str | None, username: str | None) -> str | None:
+    if full_name:
+        return full_name
+    if username:
+        return f"@{username}"
+    if admin_id:
+        return str(admin_id)
+    return None
 
 
 def _slugify(text: str) -> str:

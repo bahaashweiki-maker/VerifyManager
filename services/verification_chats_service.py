@@ -31,10 +31,14 @@ def get_user_verification_chats(telegram_id: int) -> list:
         conn.row_factory = _row_factory
         cur = conn.execute(
             """
-            SELECT *
-            FROM verification_chats
-            WHERE telegram_id = ?
-            ORDER BY created_at ASC, id ASC
+            SELECT
+                vc.*,
+                u.full_name AS opened_by_full_name,
+                u.username  AS opened_by_username
+            FROM verification_chats vc
+            LEFT JOIN users u ON u.telegram_id = vc.opened_by
+            WHERE vc.telegram_id = ?
+            ORDER BY vc.created_at ASC, vc.id ASC
             """,
             (telegram_id,),
         )
@@ -45,7 +49,15 @@ def get_verification_chat(chat_id: int) -> Optional[dict]:
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
-            "SELECT * FROM verification_chats WHERE id = ?",
+            """
+            SELECT
+                vc.*,
+                u.full_name AS opened_by_full_name,
+                u.username  AS opened_by_username
+            FROM verification_chats vc
+            LEFT JOIN users u ON u.telegram_id = vc.opened_by
+            WHERE vc.id = ?
+            """,
             (chat_id,),
         )
         return cur.fetchone()
@@ -93,16 +105,17 @@ def add_verification_chat_message(
     message_type: str,
     content_text: str | None = None,
     file_id: str | None = None,
+    sender_id: int | None = None,
 ) -> bool:
     try:
         with get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO verification_chat_messages
-                    (chat_id, sender_role, message_type, content_text, file_id)
-                VALUES (?, ?, ?, ?, ?)
+                    (chat_id, sender_role, message_type, content_text, file_id, sender_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (chat_id, sender_role, message_type, content_text, file_id),
+                (chat_id, sender_role, message_type, content_text, file_id, sender_id),
             )
             conn.commit()
         return True
@@ -116,10 +129,14 @@ def get_verification_chat_messages(chat_id: int) -> list:
         conn.row_factory = _row_factory
         cur = conn.execute(
             """
-            SELECT *
-            FROM verification_chat_messages
-            WHERE chat_id = ?
-            ORDER BY created_at ASC, id ASC
+            SELECT
+                m.*,
+                u.full_name AS sender_full_name,
+                u.username  AS sender_username
+            FROM verification_chat_messages m
+            LEFT JOIN users u ON u.telegram_id = m.sender_id
+            WHERE m.chat_id = ?
+            ORDER BY m.created_at ASC, m.id ASC
             """,
             (chat_id,),
         )

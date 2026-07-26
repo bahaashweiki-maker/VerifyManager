@@ -416,10 +416,19 @@ async def _view_note(
         await update.callback_query.answer("⚠️ הערה לא נמצאה.", show_alert=True)
         return
 
+    admin_name = _fmt_admin_name(
+        n.get("created_by_full_name"),
+        n.get("created_by_username"),
+        n.get("created_by"),
+    )
+    note_date, note_time = _fmt_datetime(n.get("created_at"))
+
     text = (
         f"📝 <b>הערת מנהל</b>\n\n"
         f"{n.get('note', '')}\n\n"
-        f"<i>נרשמה בתאריך: {_fmt_date(n.get('created_at'))}</i>"
+        f"👤 מנהל: <b>{admin_name}</b>\n"
+        f"📅 תאריך: <b>{note_date}</b>\n"
+        f"🕒 שעה: <b>{note_time}</b>"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -675,10 +684,18 @@ async def _show_warnings_list(
     buttons = []
     for w in warnings:
         short = w["reason"][:30] + ("…" if len(w["reason"]) > 30 else "")
-        date  = _fmt_date(w["created_at"])
+        date, hour = _fmt_datetime(w["created_at"])
+        admin_name = _fmt_admin_name(
+            w.get("created_by_full_name"),
+            w.get("created_by_username"),
+            w.get("created_by"),
+        )
         # Open full warning on click
         buttons.append([
-            InlineKeyboardButton(f"⚠️ {short} | {date}", callback_data=f"VUSERS_WARN_VIEW_{vid}_{w['id']}"),
+            InlineKeyboardButton(
+                f"⚠️ {short} | {date} {hour} | {admin_name}",
+                callback_data=f"VUSERS_WARN_VIEW_{vid}_{w['id']}",
+            ),
             InlineKeyboardButton("🗑", callback_data=f"VUSERS_WARN_DEL_{vid}_{w['id']}"),
         ])
 
@@ -738,6 +755,11 @@ async def _process_add_warning(
         return
 
     caller_id = update.message.from_user.id
+    caller_name = _fmt_admin_name(
+        update.message.from_user.full_name,
+        update.message.from_user.username,
+        caller_id,
+    )
     success   = add_warning(v["telegram_id"], text, created_by=caller_id)
 
     msg = (
@@ -752,7 +774,7 @@ async def _process_add_warning(
             warn_count = get_warnings_count(v["telegram_id"]) or 1
             user_text = (
                 f"⚠️ אזהרה {warn_count} מתוך 3\n\n"
-                "קיבלת אזהרה ממנהלי המערכת.\n\n"
+                f"קיבלת אזהרה מ-{caller_name}.\n\n"
                 "אנא הקפד לפעול בהתאם לכללי הפלטפורמה."
             )
             await context.bot.send_message(chat_id=v["telegram_id"], text=user_text)
@@ -785,10 +807,19 @@ async def _view_warning(
         await update.callback_query.answer("⚠️ אזהרה לא נמצאה.", show_alert=True)
         return
 
+    admin_name = _fmt_admin_name(
+        w.get("created_by_full_name"),
+        w.get("created_by_username"),
+        w.get("created_by"),
+    )
+    warn_date, warn_time = _fmt_datetime(w.get("created_at"))
+
     text = (
         f"⚠️ <b>אזהרה</b>\n\n"
         f"{w.get('reason', '')}\n\n"
-        f"<i>נרשמה בתאריך: {_fmt_date(w.get('created_at'))}</i>"
+        f"👤 מנהל: <b>{admin_name}</b>\n"
+        f"📅 תאריך: <b>{warn_date}</b>\n"
+        f"🕒 שעה: <b>{warn_time}</b>"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -855,6 +886,11 @@ async def _execute_suspend(
         return
 
     caller_id = update.callback_query.from_user.id
+    caller_name = _fmt_admin_name(
+        update.callback_query.from_user.full_name,
+        update.callback_query.from_user.username,
+        caller_id,
+    )
     success   = suspend_user(v["telegram_id"], dur, created_by=caller_id)
     label     = SUSPEND_LABELS.get(dur, dur)
 
@@ -866,7 +902,7 @@ async def _execute_suspend(
                 text=(
                     f"⏸️ <b>חשבונך הושעה.</b>\n\n"
                     f"משך: <b>{label}</b>\n\n"
-                    f"לפרטים נוספים פנה למנהל המערכת."
+                    f"המנהל המטפל: <b>{caller_name}</b>"
                 ),
                 parse_mode="HTML",
             )
@@ -935,6 +971,11 @@ async def _execute_block(
 ) -> None:
     v         = get_verified_user_by_id(vid)
     caller_id = update.callback_query.from_user.id
+    caller_name = _fmt_admin_name(
+        update.callback_query.from_user.full_name,
+        update.callback_query.from_user.username,
+        caller_id,
+    )
     success   = block_verified_user(vid, performed_by=caller_id)
     await update.callback_query.answer(
         "🚫 המשתמש נחסם." if success else "❌ שגיאה.", show_alert=not success
@@ -945,7 +986,7 @@ async def _execute_block(
                 chat_id=v["telegram_id"],
                 text=(
                     "🚫 <b>חשבונך נחסם.</b>\n\n"
-                    "לפרטים נוספים פנה למנהל המערכת."
+                    f"המנהל המטפל: <b>{caller_name}</b>"
                 ),
                 parse_mode="HTML",
             )
@@ -1423,10 +1464,18 @@ async def _show_notes_list(
     buttons = []
     for n in notes:
         short = n["note"][:30] + ("…" if len(n["note"]) > 30 else "")
-        date  = _fmt_date(n["created_at"])
+        date, hour = _fmt_datetime(n["created_at"])
+        admin_name = _fmt_admin_name(
+            n.get("created_by_full_name"),
+            n.get("created_by_username"),
+            n.get("created_by"),
+        )
         # Open full note on click
         buttons.append([
-            InlineKeyboardButton(f"📝 {short} | {date}", callback_data=f"VUSERS_NOTE_VIEW_{vid}_{n['id']}"),
+            InlineKeyboardButton(
+                f"📝 {short} | {date} {hour} | {admin_name}",
+                callback_data=f"VUSERS_NOTE_VIEW_{vid}_{n['id']}",
+            ),
             InlineKeyboardButton("🗑", callback_data=f"VUSERS_NOTE_DEL_{vid}_{n['id']}"),
         ])
 
@@ -1516,8 +1565,11 @@ async def _show_history(
     else:
         lines = []
         for e in events:
-            date = e["created_at"][:10] if e["created_at"] else ""
-            lines.append(f"{e['icon']} {e['label']} <i>({date})</i>")
+            date, hour = _fmt_datetime(e.get("created_at"))
+            admin_name = e.get("admin_name") or "-"
+            lines.append(
+                f"{e['icon']} {e['label']} | 👤 {admin_name} | 📅 {date} | 🕒 {hour}"
+            )
         body = "\n".join(lines)
 
     await update.callback_query.edit_message_text(
@@ -1690,6 +1742,52 @@ def _fmt_date(ts) -> str:
         return str(ts)
 
 
+def _fmt_time(ts) -> str:
+    if not ts:
+        return "-"
+    try:
+        return ts[11:16]
+    except Exception:
+        return "-"
+
+
+def _fmt_datetime(ts) -> tuple[str, str]:
+    return _fmt_date(ts), _fmt_time(ts)
+
+
+def _fmt_admin_name(full_name, username, admin_id) -> str:
+    if full_name:
+        return full_name
+    if username:
+        return f"@{username}"
+        if not admin_id:
+            return "לא ידוע"
+
+
+    async def _resolve_admin_name(
+        context: ContextTypes.DEFAULT_TYPE,
+        admin_id,
+        full_name,
+        username,
+    ) -> str:
+        if full_name:
+            return full_name
+        if username:
+            return f"@{username}"
+        if not admin_id:
+            return "לא ידוע"
+        try:
+            chat = await context.bot.get_chat(admin_id)
+            if chat.full_name:
+                return chat.full_name
+            if chat.username:
+                return f"@{chat.username}"
+        except Exception:
+            pass
+        return "לא ידוע"
+    return "לא ידוע"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # שיחות אימות
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1703,8 +1801,18 @@ def _build_chat_view(vid: int, chat_id: int):
 
     messages = get_verification_chat_messages(chat_id)
     name     = v["full_name"] or str(v["telegram_id"])
+    opened_by_name = _fmt_admin_name(
+        chat.get("opened_by_full_name"),
+        chat.get("opened_by_username"),
+        chat.get("opened_by"),
+    )
+    open_date, open_time = _fmt_datetime(chat.get("created_at"))
 
-    lines = [f"💬 <b>שיחה עם {name}</b>"]
+    lines = [
+        f"💬 <b>שיחה עם {name}</b>",
+        f"👤 נפתחה ע\"י: <b>{opened_by_name}</b>",
+        f"📅 תאריך פתיחה: <b>{open_date}</b>   🕒 <b>{open_time}</b>",
+    ]
     if not chat["is_open"]:
         lines.append("🔴 השיחה סגורה")
     lines.append("")
@@ -1712,26 +1820,34 @@ def _build_chat_view(vid: int, chat_id: int):
     media_buttons = []
     for msg in messages[-20:]:
         role = "👤 משתמש" if msg["sender_role"] == "user" else "🛡 אדמין"
+        msg_date, msg_time = _fmt_datetime(msg.get("created_at"))
+        admin_name = _fmt_admin_name(
+            msg.get("sender_full_name"),
+            msg.get("sender_username"),
+            msg.get("sender_id"),
+        )
+        if msg["sender_role"] == "admin":
+            role = f"🛡 אדמין ({admin_name})"
         mtype = msg["message_type"]
         if mtype == "text":
             txt = (msg.get("content_text") or "")
             if len(txt) > 80:
                 txt = txt[:77] + "..."
-            lines.append(f"<b>{role}:</b> {txt}")
+            lines.append(f"<b>{role}:</b> {txt} <i>({msg_date} {msg_time})</i>")
         elif mtype == "photo":
-            lines.append(f"<b>{role}:</b> 📷 תמונה")
+            lines.append(f"<b>{role}:</b> 📷 תמונה <i>({msg_date} {msg_time})</i>")
             media_buttons.append([InlineKeyboardButton(
                 f"📷 הצג ({msg['id']})",
                 callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
             )])
         elif mtype == "video":
-            lines.append(f"<b>{role}:</b> 🎥 סרטון")
+            lines.append(f"<b>{role}:</b> 🎥 סרטון <i>({msg_date} {msg_time})</i>")
             media_buttons.append([InlineKeyboardButton(
                 f"🎥 הצג ({msg['id']})",
                 callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
             )])
         elif mtype == "document":
-            lines.append(f"<b>{role}:</b> 📎 מסמך")
+            lines.append(f"<b>{role}:</b> 📎 מסמך <i>({msg_date} {msg_time})</i>")
 
     if not messages:
         lines.append("אין הודעות עדיין.")
@@ -1767,10 +1883,15 @@ async def _show_verification_chats(
 
     buttons = []
     for chat in reversed(chats):
-        date   = _fmt_date(chat["created_at"])
+        date, hour = _fmt_datetime(chat["created_at"])
+        opened_by_name = _fmt_admin_name(
+            chat.get("opened_by_full_name"),
+            chat.get("opened_by_username"),
+            chat.get("opened_by"),
+        )
         title  = "💬 שיחה פעילה" if chat["is_open"] else "🔏 שיחה הסתיימה"
         buttons.append([InlineKeyboardButton(
-            f"{title} • {date}",
+            f"{title} • {date} {hour} • {opened_by_name}",
             callback_data=f"VCHAT_VIEW_{vid}_{chat['id']}",
         )])
 
@@ -1820,7 +1941,13 @@ async def _open_verification_chat(
         await update.callback_query.answer("❌ פתיחת השיחה נכשלה: לא ניתן לשלוח הודעת פתיחה למשתמש.", show_alert=True)
         return
 
-    add_verification_chat_message(chat_id, "admin", "text", content_text="💬 שיחה נפתחה.")
+    add_verification_chat_message(
+        chat_id,
+        "admin",
+        "text",
+        content_text="💬 שיחה נפתחה.",
+        sender_id=admin_id,
+    )
 
     text, keyboard = _build_chat_view(vid, chat_id)
     await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -1868,12 +1995,24 @@ async def _process_send_chat_message(
     if not v:
         return
 
-    add_verification_chat_message(chat_id, "admin", "text", content_text=text)
+    admin_sender_id = update.message.from_user.id
+    admin_sender_name = _fmt_admin_name(
+        update.message.from_user.full_name,
+        update.message.from_user.username,
+        admin_sender_id,
+    )
+    add_verification_chat_message(
+        chat_id,
+        "admin",
+        "text",
+        content_text=text,
+        sender_id=admin_sender_id,
+    )
 
     try:
         await context.bot.send_message(
             chat_id=v["telegram_id"],
-            text=f"💬 <b>הודעה מנציג:</b>\n\n{text}",
+            text=f"💬 <b>הודעה מ-{admin_sender_name}:</b>\n\n{text}",
             parse_mode="HTML",
         )
     except Exception:
@@ -2036,33 +2175,38 @@ async def handle_verification_chat_user_message(
 
     if msg.photo:
         file_id = msg.photo[-1].file_id
-        add_verification_chat_message(chat_id, "user", "photo", file_id=file_id)
+        add_verification_chat_message(chat_id, "user", "photo", file_id=file_id, sender_id=user_id)
         label = "📷 תמונה"
         forward_video_note_file_id = None
     elif msg.video:
         file_id = msg.video.file_id
-        add_verification_chat_message(chat_id, "user", "video", file_id=file_id)
+        add_verification_chat_message(chat_id, "user", "video", file_id=file_id, sender_id=user_id)
         label = "🎥 סרטון"
         forward_video_note_file_id = None
     elif msg.video_note:
         file_id = msg.video_note.file_id
-        add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id)
+        add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id, sender_id=user_id)
         label = "⭕️ Video Note"
         forward_video_note_file_id = file_id
     elif msg.document:
         file_id = msg.document.file_id
-        add_verification_chat_message(chat_id, "user", "document", file_id=file_id)
+        add_verification_chat_message(chat_id, "user", "document", file_id=file_id, sender_id=user_id)
         label = "📎 מסמך"
         forward_video_note_file_id = None
     elif msg.text:
-        add_verification_chat_message(chat_id, "user", "text", content_text=msg.text)
+        add_verification_chat_message(chat_id, "user", "text", content_text=msg.text, sender_id=user_id)
         label = f"💬 {msg.text[:100]}"
         forward_video_note_file_id = None
     else:
         return False
 
     try:
-        await msg.reply_text("✅ ההודעה נשלחה לנציג.")
+        opened_by_name = _fmt_admin_name(
+            active_chat.get("opened_by_full_name"),
+            active_chat.get("opened_by_username"),
+            active_chat.get("opened_by"),
+        )
+        await msg.reply_text(f"✅ ההודעה נשלחה אל {opened_by_name}.")
     except Exception:
         pass
 
