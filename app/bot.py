@@ -276,7 +276,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("vusers_state") and update.message and update.message.text:
         return await handle_verified_users_input(update, context)
     # קלט ממודול מנויים (חיפוש)
-    if context.user_data.get("subs_state") and update.message and update.message.text:
+    if context.user_data.get("subs_state") and update.message:
         return await handle_subscriptions_input(update, context)
     # קלט ממסך האימות הישן (VERIFY_MESSAGE_) חייב להישאר מופרד ממסלול שיחות האימות
     if update.message and update.effective_user:
@@ -336,6 +336,11 @@ def main():
         MessageHandler(
             filters.PHOTO
             | filters.VIDEO
+            | filters.Document.ALL
+            | filters.VOICE
+            | filters.AUDIO
+            | filters.ANIMATION
+            | filters.Sticker.ALL
             | filters.VIDEO_NOTE
             | filters.TEXT,
             media_handler,

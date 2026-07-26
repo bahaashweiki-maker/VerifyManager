@@ -59,6 +59,7 @@ def add_chat_message(
     sender_role: str,
     sender_id: int,
     message_text: str,
+    file_id: str | None = None,
 ) -> int:
     with get_connection() as conn:
         cur = conn.execute(
@@ -67,11 +68,12 @@ def add_chat_message(
                 chat_id,
                 sender_role,
                 sender_id,
-                message_text
+                message_text,
+                file_id
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (chat_id, sender_role, sender_id, message_text),
+            (chat_id, sender_role, sender_id, message_text, file_id),
         )
         conn.commit()
         return int(cur.lastrowid)

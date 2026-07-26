@@ -7,6 +7,7 @@ All not-yet-implemented actions return "בקרוב" while screens and callbacks 
 
 from __future__ import annotations
 
+import json
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -53,6 +54,9 @@ _SUB_ID = "subs_subscriber_id"
 _SUB_ORIGIN = "subs_origin"
 _SUB_PAGE = "subs_page"
 _SUB_CHAT_ID = "subs_active_chat_id"
+_SUBS_MEDIA_PREVIEW_MSG_ID = "subs_media_preview_msg_id"
+_SUBS_MEDIA_PREVIEW_CHAT_ID = "subs_media_preview_chat_id"
+_SUBS_MEDIA_META_PREFIX = "__SUBS_MEDIA__:"
 
 
 async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -61,6 +65,9 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
 
     if data is None:
         return
+
+    if not data.startswith("SUBS_MEDIA_BACK_"):
+        await _clear_open_media_preview(context, query.message.chat_id)
 
     if data == "ADMIN_SUBSCRIPTIONS" or data == "SUBS_MAIN":
         return await _show_main(update)
@@ -142,6 +149,18 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
 
     if data.startswith("SUBS_CHAT_"):
         return await _open_chat_screen(update, data)
+
+    if data.startswith("SUBS_MEDIA_VIEW_CHAT_"):
+        return await _show_subscriber_media_from_chat(update, context, data)
+
+    if data.startswith("SUBS_MEDIA_VIEW_H_"):
+        return await _show_subscriber_media_from_history(update, context, data)
+
+    if data.startswith("SUBS_MEDIA_BACK_CHAT_"):
+        return await _back_from_subscriber_media(update, context)
+
+    if data.startswith("SUBS_MEDIA_BACK_H_"):
+        return await _back_from_subscriber_media(update, context)
 
     if data.startswith("SUBS_STATS_RESET_CONFIRM_"):
         payload = _parse_card_payload(data, "SUBS_STATS_RESET_CONFIRM_")
@@ -492,6 +511,50 @@ def _parse_history_payload(data: str, prefix: str):
         return None
 
 
+def _parse_media_chat_payload(data: str, prefix: str):
+    try:
+        suffix = data[len(prefix):]
+        parts = suffix.split("_", 4)
+        if len(parts) != 5:
+            return None
+        origin = parts[0]
+        page = int(parts[1])
+        subscriber_id = int(parts[2])
+        chat_id = int(parts[3])
+        msg_id = int(parts[4])
+        if origin not in {"L", "S"} or page <= 0 or subscriber_id <= 0 or chat_id <= 0 or msg_id <= 0:
+            return None
+        return origin, page, subscriber_id, chat_id, msg_id
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_media_history_payload(data: str, prefix: str):
+    try:
+        suffix = data[len(prefix):]
+        parts = suffix.split("_", 5)
+        if len(parts) != 6:
+            return None
+        origin = parts[0]
+        page = int(parts[1])
+        subscriber_id = int(parts[2])
+        history_page = int(parts[3])
+        chat_id = int(parts[4])
+        msg_id = int(parts[5])
+        if (
+            origin not in {"L", "S"}
+            or page <= 0
+            or subscriber_id <= 0
+            or history_page <= 0
+            or chat_id <= 0
+            or msg_id <= 0
+        ):
+            return None
+        return origin, page, subscriber_id, history_page, chat_id, msg_id
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_not_modified(exc: Exception) -> bool:
     return "message is not modified" in str(exc).lower()
 
@@ -558,6 +621,115 @@ def _fmt_dt(ts) -> str:
         return str(ts)
 
 
+def _pack_media_meta(media_type: str, caption: str | None) -> str:
+    payload = {
+        "media_type": media_type,
+        "caption": caption or "",
+    }
+    return _SUBS_MEDIA_META_PREFIX + json.dumps(payload, ensure_ascii=False)
+
+
+def _unpack_media_meta(message_text: str | None):
+    if not message_text or not isinstance(message_text, str):
+        return None
+    if not message_text.startswith(_SUBS_MEDIA_META_PREFIX):
+        return None
+    raw = message_text[len(_SUBS_MEDIA_META_PREFIX):]
+    try:
+        data = json.loads(raw)
+        media_type = str(data.get("media_type") or "")
+        caption = str(data.get("caption") or "")
+        if not media_type:
+            return None
+        return {
+            "media_type": media_type,
+            "caption": caption,
+        }
+    except Exception:
+        return None
+
+
+def _extract_message_media(message) -> dict | None:
+    if not message:
+        return None
+    caption = getattr(message, "caption", None)
+
+    if getattr(message, "photo", None):
+        return {"media_type": "photo", "file_id": message.photo[-1].file_id, "caption": caption}
+    if getattr(message, "video", None):
+        return {"media_type": "video", "file_id": message.video.file_id, "caption": caption}
+    if getattr(message, "document", None):
+        return {"media_type": "document", "file_id": message.document.file_id, "caption": caption}
+    if getattr(message, "voice", None):
+        return {"media_type": "voice", "file_id": message.voice.file_id, "caption": caption}
+    if getattr(message, "audio", None):
+        return {"media_type": "audio", "file_id": message.audio.file_id, "caption": caption}
+    if getattr(message, "animation", None):
+        return {"media_type": "animation", "file_id": message.animation.file_id, "caption": caption}
+    if getattr(message, "sticker", None):
+        return {"media_type": "sticker", "file_id": message.sticker.file_id, "caption": caption}
+    return None
+
+
+def _media_label(media_type: str) -> str:
+    labels = {
+        "photo": "📷 תמונה",
+        "video": "🎥 וידאו",
+        "document": "📎 מסמך",
+        "voice": "🎙️ הודעת קול",
+        "audio": "🎵 אודיו",
+        "animation": "🌀 אנימציה",
+        "sticker": "🏷️ מדבקה",
+    }
+    return labels.get(media_type, "🗂️ מדיה")
+
+
+async def _clear_open_media_preview(context: ContextTypes.DEFAULT_TYPE, panel_chat_id: int | None) -> None:
+    msg_id = context.user_data.get(_SUBS_MEDIA_PREVIEW_MSG_ID)
+    chat_id = context.user_data.get(_SUBS_MEDIA_PREVIEW_CHAT_ID)
+    if not msg_id or not chat_id:
+        return
+    if panel_chat_id and int(chat_id) != int(panel_chat_id):
+        return
+    try:
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=int(msg_id))
+    except Exception:
+        pass
+    finally:
+        context.user_data.pop(_SUBS_MEDIA_PREVIEW_MSG_ID, None)
+        context.user_data.pop(_SUBS_MEDIA_PREVIEW_CHAT_ID, None)
+
+
+async def _send_media_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    chat_id: int,
+    media_type: str,
+    file_id: str,
+    caption: str | None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+):
+    kwargs = {
+        "chat_id": chat_id,
+        "reply_markup": reply_markup,
+    }
+    if media_type == "photo":
+        return await context.bot.send_photo(photo=file_id, caption=caption or None, **kwargs)
+    if media_type == "video":
+        return await context.bot.send_video(video=file_id, caption=caption or None, **kwargs)
+    if media_type == "document":
+        return await context.bot.send_document(document=file_id, caption=caption or None, **kwargs)
+    if media_type == "voice":
+        return await context.bot.send_voice(voice=file_id, caption=caption or None, **kwargs)
+    if media_type == "audio":
+        return await context.bot.send_audio(audio=file_id, caption=caption or None, **kwargs)
+    if media_type == "animation":
+        return await context.bot.send_animation(animation=file_id, caption=caption or None, **kwargs)
+    if media_type == "sticker":
+        return await context.bot.send_sticker(sticker=file_id, **kwargs)
+    return None
+
+
 async def _open_chat_screen(update: Update, data: str) -> None:
     payload = _parse_card_payload(data, "SUBS_CHAT_")
     if payload is None:
@@ -570,6 +742,17 @@ async def _open_chat_screen(update: Update, data: str) -> None:
 
     admin_id = update.callback_query.from_user.id
     chat_id = open_subscriber_chat(subscriber_id=subscriber_id, admin_id=admin_id)
+    try:
+        await update.get_bot().send_message(
+            chat_id=subscriber["telegram_id"],
+            text=(
+                "📩 נפתחה שיחה בינך לבין צוות הבוט.\n"
+                "כעת ניתן להשיב ישירות להודעות.\n"
+                "תודה."
+            ),
+        )
+    except Exception:
+        pass
     await _render_chat_screen(update, origin, page, subscriber_id, chat_id)
 
 
@@ -589,6 +772,18 @@ async def _close_chat_screen(update: Update, data: str) -> None:
     from services.subscriber_chat_service import close_chat
 
     close_chat(chat_id)
+    subscriber = get_subscriber_card(subscriber_id)
+    if subscriber:
+        try:
+            await update.get_bot().send_message(
+                chat_id=subscriber["telegram_id"],
+                text=(
+                    "✅ השיחה עם צוות הבוט נסגרה.\n"
+                    "תודה על שיתוף הפעולה."
+                ),
+            )
+        except Exception:
+            pass
     await _render_chat_screen(update, origin, page, subscriber_id, chat_id)
 
 
@@ -623,7 +818,14 @@ def _compose_chat_screen(origin: str, page: int, subscriber_id: int, chat_id: in
     ]
     for m in messages[-20:]:
         role = "🛡️ מנהל" if m.get("sender_role") == "admin" else "👤 מנוי"
-        lines.append(f"{role}: {m.get('message_text') or ''} <i>({_fmt_dt(m.get('created_at'))})</i>")
+        media_meta = _unpack_media_meta(m.get("message_text"))
+        if media_meta and m.get("file_id"):
+            media_caption = media_meta.get("caption") or ""
+            media_title = _media_label(media_meta.get("media_type") or "")
+            caption_preview = f" | {media_caption[:80]}" if media_caption else ""
+            lines.append(f"{role}: {media_title}{caption_preview} <i>({_fmt_dt(m.get('created_at'))})</i>")
+        else:
+            lines.append(f"{role}: {m.get('message_text') or ''} <i>({_fmt_dt(m.get('created_at'))})</i>")
     if not messages:
         lines.append("אין הודעות עדיין.")
 
@@ -631,6 +833,15 @@ def _compose_chat_screen(origin: str, page: int, subscriber_id: int, chat_id: in
     if chat.get("is_open"):
         rows.append([InlineKeyboardButton("✉️ שלח הודעה", callback_data=f"SUBS_CHAT_SEND_{origin}_{page}_{subscriber_id}_{chat_id}")])
         rows.append([InlineKeyboardButton("🔒 סגור שיחה", callback_data=f"SUBS_CHAT_CLOSE_{origin}_{page}_{subscriber_id}_{chat_id}")])
+    for m in messages[-20:]:
+        media_meta = _unpack_media_meta(m.get("message_text"))
+        if media_meta and m.get("file_id") and m.get("id"):
+            rows.append([
+                InlineKeyboardButton(
+                    f"{_media_label(media_meta.get('media_type') or '')} · פתח",
+                    callback_data=f"SUBS_MEDIA_VIEW_CHAT_{origin}_{page}_{subscriber_id}_{chat_id}_{m['id']}",
+                )
+            ])
     rows.append([InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_CHAT_VIEW_{origin}_{page}_{subscriber_id}_{chat_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -680,6 +891,7 @@ async def _show_chat_history_screen(
                 "chat_id": c["id"],
                 "sender_role": m.get("sender_role"),
                 "message_text": m.get("message_text") or "(ללא טקסט)",
+                "file_id": m.get("file_id"),
                 "created_at": m.get("created_at"),
                 "id": m.get("id") or 0,
             })
@@ -704,11 +916,29 @@ async def _show_chat_history_screen(
     if not page_messages:
         lines.append("ההיסטוריה ריקה.")
     else:
+        media_rows = []
         for m in page_messages:
             role = "🛡️ מנהל" if m.get("sender_role") == "admin" else "👤 מנוי"
-            lines.append(
-                f"{role}: {m.get('message_text')} | <i>{_fmt_dt(m.get('created_at'))}</i>"
-            )
+            media_meta = _unpack_media_meta(m.get("message_text"))
+            if media_meta and m.get("file_id") and m.get("id"):
+                media_caption = media_meta.get("caption") or ""
+                media_title = _media_label(media_meta.get("media_type") or "")
+                caption_preview = f" | {media_caption[:80]}" if media_caption else ""
+                lines.append(
+                    f"{role}: {media_title}{caption_preview} | <i>{_fmt_dt(m.get('created_at'))}</i>"
+                )
+                media_rows.append([
+                    InlineKeyboardButton(
+                        f"{media_title} · פתח",
+                        callback_data=(
+                            f"SUBS_MEDIA_VIEW_H_{origin}_{page}_{subscriber_id}_{history_page}_{m['chat_id']}_{m['id']}"
+                        ),
+                    )
+                ])
+            else:
+                lines.append(
+                    f"{role}: {m.get('message_text')} | <i>{_fmt_dt(m.get('created_at'))}</i>"
+                )
 
     rows = []
     if total_pages > 1:
@@ -731,6 +961,8 @@ async def _show_chat_history_screen(
             rows.append(nav)
 
     rows.append([InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_CHAT_HISTORY_PAGE_{origin}_{page}_{subscriber_id}_{history_page}")])
+    if 'media_rows' in locals() and media_rows:
+        rows.extend(media_rows)
     rows.append([InlineKeyboardButton("🗑️ איפוס היסטוריה", callback_data=f"SUBS_CHAT_RESET_CONFIRM_{origin}_{page}_{subscriber_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")])
 
@@ -791,6 +1023,101 @@ async def _show_personal_stats(update: Update, data: str) -> None:
         ]),
         parse_mode="HTML",
     )
+
+
+async def _show_subscriber_media_from_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    data: str,
+) -> None:
+    payload = _parse_media_chat_payload(data, "SUBS_MEDIA_VIEW_CHAT_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id, chat_id, msg_id = payload
+    messages = get_subscriber_chat_history(chat_id)
+    target = None
+    for m in messages:
+        if int(m.get("id") or 0) == msg_id:
+            target = m
+            break
+    if not target:
+        await update.callback_query.answer("⚠️ מדיה לא נמצאה.", show_alert=True)
+        return
+    media_meta = _unpack_media_meta(target.get("message_text"))
+    file_id = target.get("file_id")
+    if not media_meta or not file_id:
+        await update.callback_query.answer("⚠️ הודעה זו אינה מדיה.", show_alert=True)
+        return
+
+    await _clear_open_media_preview(context, update.callback_query.message.chat_id)
+    preview = await _send_media_message(
+        context,
+        chat_id=update.callback_query.message.chat_id,
+        media_type=media_meta.get("media_type") or "",
+        file_id=file_id,
+        caption=media_meta.get("caption"),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_MEDIA_BACK_CHAT_{origin}_{page}_{subscriber_id}_{chat_id}")]
+        ]),
+    )
+    if preview:
+        context.user_data[_SUBS_MEDIA_PREVIEW_MSG_ID] = preview.message_id
+        context.user_data[_SUBS_MEDIA_PREVIEW_CHAT_ID] = preview.chat_id
+    await update.callback_query.answer()
+
+
+async def _show_subscriber_media_from_history(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    data: str,
+) -> None:
+    payload = _parse_media_history_payload(data, "SUBS_MEDIA_VIEW_H_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id, history_page, chat_id, msg_id = payload
+    messages = get_subscriber_chat_history(chat_id)
+    target = None
+    for m in messages:
+        if int(m.get("id") or 0) == msg_id:
+            target = m
+            break
+    if not target:
+        await update.callback_query.answer("⚠️ מדיה לא נמצאה.", show_alert=True)
+        return
+    media_meta = _unpack_media_meta(target.get("message_text"))
+    file_id = target.get("file_id")
+    if not media_meta or not file_id:
+        await update.callback_query.answer("⚠️ הודעה זו אינה מדיה.", show_alert=True)
+        return
+
+    await _clear_open_media_preview(context, update.callback_query.message.chat_id)
+    preview = await _send_media_message(
+        context,
+        chat_id=update.callback_query.message.chat_id,
+        media_type=media_meta.get("media_type") or "",
+        file_id=file_id,
+        caption=media_meta.get("caption"),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_MEDIA_BACK_H_{origin}_{page}_{subscriber_id}_{history_page}")]
+        ]),
+    )
+    if preview:
+        context.user_data[_SUBS_MEDIA_PREVIEW_MSG_ID] = preview.message_id
+        context.user_data[_SUBS_MEDIA_PREVIEW_CHAT_ID] = preview.chat_id
+    await update.callback_query.answer()
+
+
+async def _back_from_subscriber_media(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    try:
+        await update.callback_query.message.delete()
+    except Exception:
+        pass
+    context.user_data.pop(_SUBS_MEDIA_PREVIEW_MSG_ID, None)
+    context.user_data.pop(_SUBS_MEDIA_PREVIEW_CHAT_ID, None)
+    await update.callback_query.answer()
 
 
 async def _confirm_reset_personal_stats(update: Update, origin: str, page: int, subscriber_id: int) -> None:
@@ -1026,8 +1353,9 @@ async def handle_subscriptions_input(
         return
 
     if state == _AWAIT_CHAT_MSG:
-        text = (update.message.text or "").strip()
-        if not text:
+        text = (update.message.text or "").strip() if update.message else ""
+        media = _extract_message_media(update.message)
+        if not text and not media:
             return
 
         origin = context.user_data.get(_SUB_ORIGIN)
@@ -1047,17 +1375,34 @@ async def handle_subscriptions_input(
             pass
 
         admin_id = update.message.from_user.id
-        add_subscriber_chat_message(
-            chat_id=chat_id,
-            sender_role="admin",
-            sender_id=admin_id,
-            message_text=text,
-        )
+        if media:
+            add_subscriber_chat_message(
+                chat_id=chat_id,
+                sender_role="admin",
+                sender_id=admin_id,
+                message_text=_pack_media_meta(media["media_type"], media.get("caption")),
+            )
+        else:
+            add_subscriber_chat_message(
+                chat_id=chat_id,
+                sender_role="admin",
+                sender_id=admin_id,
+                message_text=text,
+            )
 
         s = get_subscriber_card(subscriber_id)
         if s:
             try:
-                await context.bot.send_message(chat_id=s["telegram_id"], text=text)
+                if media:
+                    await _send_media_message(
+                        context,
+                        chat_id=s["telegram_id"],
+                        media_type=media["media_type"],
+                        file_id=media["file_id"],
+                        caption=media.get("caption"),
+                    )
+                else:
+                    await context.bot.send_message(chat_id=s["telegram_id"], text=text)
             except Exception:
                 pass
 
@@ -1089,7 +1434,9 @@ async def handle_subscriber_user_message(
 ) -> bool:
     if not update.message or not update.effective_user:
         return False
-    if not update.message.text:
+    media = _extract_message_media(update.message)
+    text = (update.message.text or "").strip() if update.message else ""
+    if not text and not media:
         return False
 
     from services.subscribers_service import get_subscriber_card_by_telegram_id
@@ -1102,12 +1449,25 @@ async def handle_subscriber_user_message(
     if not chat:
         return False
 
-    add_subscriber_chat_message(
-        chat_id=chat["id"],
-        sender_role="subscriber",
-        sender_id=update.effective_user.id,
-        message_text=update.message.text,
-    )
+    if media:
+        add_subscriber_chat_message(
+            chat_id=chat["id"],
+            sender_role="subscriber",
+            sender_id=update.effective_user.id,
+            message_text=_pack_media_meta(media["media_type"], media.get("caption")),
+            file_id=media["file_id"],
+        )
+        admin_preview = _media_label(media["media_type"])
+        if media.get("caption"):
+            admin_preview += f"\n{media['caption']}"
+    else:
+        add_subscriber_chat_message(
+            chat_id=chat["id"],
+            sender_role="subscriber",
+            sender_id=update.effective_user.id,
+            message_text=text,
+        )
+        admin_preview = text
     try:
         track_subscriber_activity(
             subscriber_id=int(subscriber["id"]),
@@ -1124,7 +1484,7 @@ async def handle_subscriber_user_message(
             text=(
                 "📩 <b>תגובה חדשה ממנוי</b>\n\n"
                 f"👤 מזהה מנוי: <code>{subscriber['telegram_id']}</code>\n"
-                f"💬 {update.message.text}"
+                f"💬 {admin_preview}"
             ),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 פתח שיחה", callback_data=f"SUBS_CHAT_OPEN_{subscriber['id']}_{chat['id']}")],

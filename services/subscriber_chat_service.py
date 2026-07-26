@@ -45,12 +45,14 @@ def add_subscriber_chat_message(
     sender_role: str,
     sender_id: int,
     message_text: str,
+    file_id: str | None = None,
 ) -> int:
     return add_chat_message(
         chat_id=chat_id,
         sender_role=sender_role,
         sender_id=sender_id,
         message_text=message_text,
+        file_id=file_id,
     )
 
 
