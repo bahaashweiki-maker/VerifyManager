@@ -12,6 +12,7 @@ from repositories.subscribers_repository import (
     get_subscriber_by_telegram_id,
     set_subscriber_status,
     delete_subscriber,
+    add_subscriber_activity_event,
 )
 from services.verified_users_service import suspend_user, lift_suspension
 
@@ -84,3 +85,17 @@ def unsuspend_subscriber(subscriber_id: int, performed_by: int | None = None) ->
 
 def remove_subscriber(subscriber_id: int) -> bool:
     return delete_subscriber(subscriber_id)
+
+
+def track_subscriber_activity(
+    subscriber_id: int,
+    event_key: str,
+    payload: str | None = None,
+    increment_basic_activity: bool = True,
+) -> bool:
+    return add_subscriber_activity_event(
+        subscriber_id=subscriber_id,
+        event_key=event_key,
+        payload=payload,
+        increment_basic_activity=increment_basic_activity,
+    )

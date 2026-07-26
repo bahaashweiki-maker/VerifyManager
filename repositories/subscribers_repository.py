@@ -67,9 +67,10 @@ def touch_subscriber(
                 username,
                 first_seen_at,
                 last_seen_at,
-                login_count
+                login_count,
+                basic_activity
             )
-            VALUES (?, ?, ?, datetime('now'), datetime('now'), 1)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'), 1, 1)
             """,
             (telegram_id, full_name, username),
         )
@@ -82,10 +83,25 @@ def touch_subscriber(
                     full_name = COALESCE(?, full_name),
                     username = COALESCE(?, username),
                     last_seen_at = datetime('now'),
-                    login_count = login_count + 1
+                    login_count = login_count + 1,
+                    basic_activity = basic_activity + 1
                 WHERE telegram_id = ?
                 """,
                 (full_name, username, telegram_id),
+            )
+
+        sub_row = conn.execute(
+            "SELECT id FROM subscribers WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if sub_row:
+            subscriber_id = int(sub_row[0])
+            conn.execute(
+                """
+                INSERT INTO subscriber_activity_log (subscriber_id, event_key, payload)
+                VALUES (?, 'login', NULL)
+                """,
+                (subscriber_id,),
             )
 
         conn.commit()
@@ -96,6 +112,35 @@ def touch_subscriber(
             (telegram_id,),
         ).fetchone()
         return out or {}
+
+
+def add_subscriber_activity_event(
+    subscriber_id: int,
+    event_key: str,
+    payload: str | None = None,
+    increment_basic_activity: bool = True,
+) -> bool:
+    with get_connection() as conn:
+        if increment_basic_activity:
+            conn.execute(
+                """
+                UPDATE subscribers
+                SET basic_activity = basic_activity + 1,
+                    last_seen_at = datetime('now')
+                WHERE id = ?
+                """,
+                (subscriber_id,),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO subscriber_activity_log (subscriber_id, event_key, payload)
+            VALUES (?, ?, ?)
+            """,
+            (subscriber_id, event_key, payload),
+        )
+        conn.commit()
+        return True
 
 
 def search_subscribers(term: str, limit: int = 50) -> list:

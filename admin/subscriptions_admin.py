@@ -22,10 +22,12 @@ from services.subscribers_service import (
     suspend_subscriber,
     unsuspend_subscriber,
     remove_subscriber,
+    track_subscriber_activity,
 )
 from services.subscriber_stats_service import (
     get_subscription_system_stats,
     get_subscriber_personal_statistics,
+    reset_personal_stats,
 )
 from services.subscriber_chat_service import (
     open_subscriber_chat,
@@ -140,6 +142,20 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
 
     if data.startswith("SUBS_CHAT_"):
         return await _open_chat_screen(update, data)
+
+    if data.startswith("SUBS_STATS_RESET_CONFIRM_"):
+        payload = _parse_card_payload(data, "SUBS_STATS_RESET_CONFIRM_")
+        if payload is None:
+            return await _invalid_callback(update)
+        origin, page, subscriber_id = payload
+        return await _confirm_reset_personal_stats(update, origin, page, subscriber_id)
+
+    if data.startswith("SUBS_STATS_RESET_DO_"):
+        payload = _parse_card_payload(data, "SUBS_STATS_RESET_DO_")
+        if payload is None:
+            return await _invalid_callback(update)
+        origin, page, subscriber_id = payload
+        return await _do_reset_personal_stats(update, origin, page, subscriber_id)
 
     if data.startswith("SUBS_STATS_"):
         return await _show_personal_stats(update, data)
@@ -770,10 +786,43 @@ async def _show_personal_stats(update: Update, data: str) -> None:
         text=text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("🧹 איפוס סטטיסטיקה", callback_data=f"SUBS_STATS_RESET_CONFIRM_{origin}_{page}_{subscriber_id}")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def _confirm_reset_personal_stats(update: Update, origin: str, page: int, subscriber_id: int) -> None:
+    await _safe_query_edit(
+        update,
+        text=(
+            "🧹 <b>איפוס סטטיסטיקה אישית</b>\n\n"
+            "פעולה זו תאפס רק את שדות הסטטיסטיקה של המנוי.\n"
+            "פרטי זהות, סטטוס, צ'אטים והיסטוריה לא יימחקו."
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, אפס", callback_data=f"SUBS_STATS_RESET_DO_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _do_reset_personal_stats(update: Update, origin: str, page: int, subscriber_id: int) -> None:
+    ok = reset_personal_stats(subscriber_id)
+    await update.callback_query.answer("✅ הסטטיסטיקה אופסה." if ok else "❌ איפוס נכשל.", show_alert=not ok)
+    if ok:
+        try:
+            track_subscriber_activity(
+                subscriber_id=subscriber_id,
+                event_key="stats_reset",
+                payload="admin_reset",
+                increment_basic_activity=False,
+            )
+        except Exception:
+            pass
+    await _show_personal_stats(update, f"SUBS_STATS_{origin}_{page}_{subscriber_id}")
 
 
 async def _show_suspend_menu(update: Update, data: str) -> None:
@@ -1059,6 +1108,15 @@ async def handle_subscriber_user_message(
         sender_id=update.effective_user.id,
         message_text=update.message.text,
     )
+    try:
+        track_subscriber_activity(
+            subscriber_id=int(subscriber["id"]),
+            event_key="chat_message",
+            payload=None,
+            increment_basic_activity=True,
+        )
+    except Exception:
+        pass
 
     try:
         await context.bot.send_message(

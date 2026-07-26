@@ -135,6 +135,23 @@ def init_subscriptions_db() -> None:
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_stats_reset_baselines (
+                subscriber_id                 INTEGER PRIMARY KEY,
+                login_count_base             INTEGER NOT NULL DEFAULT 0,
+                basic_activity_base          INTEGER NOT NULL DEFAULT 0,
+                activity_events_base         INTEGER NOT NULL DEFAULT 0,
+                messages_to_subscriber_base  INTEGER NOT NULL DEFAULT 0,
+                messages_from_subscriber_base INTEGER NOT NULL DEFAULT 0,
+                publications_sent_base       INTEGER NOT NULL DEFAULT 0,
+                publication_clicks_base      INTEGER NOT NULL DEFAULT 0,
+                reset_at                     TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
+            )
+            """
+        )
+
         conn.commit()
 
     logger.info("subscriptions_db initialized")

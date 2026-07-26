@@ -523,6 +523,23 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     bot     = context.bot
     chat_id = query.message.chat_id
 
+    try:
+        from services.subscribers_service import (
+            get_subscriber_card_by_telegram_id,
+            track_subscriber_activity,
+        )
+
+        subscriber = get_subscriber_card_by_telegram_id(query.from_user.id)
+        if subscriber:
+            track_subscriber_activity(
+                subscriber_id=int(subscriber["id"]),
+                event_key=f"pub_nav_{action or 'unknown'}",
+                payload=(query.data or "")[:120],
+                increment_basic_activity=True,
+            )
+    except Exception:
+        pass
+
     if action == "page" and len(parts) > 3:
         page_id = int(parts[3])
         _raw    = pub_get_page_by_id(page_id)
