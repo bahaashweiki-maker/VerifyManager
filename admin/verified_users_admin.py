@@ -1854,6 +1854,28 @@ def _build_chat_view(vid: int, chat_id: int):
     lines.append("")
 
     media_buttons = []
+
+    def _sender_prefix(sender_role: str) -> str:
+        return "🛡️" if sender_role == "admin" else "👤"
+
+    def _sender_label(sender_role: str) -> str:
+        return "מנהל" if sender_role == "admin" else "מנוי"
+
+    def _media_button_label(sender_role: str, message_type: str) -> str | None:
+        labels = {
+            "photo": "📷 תמונה",
+            "video": "🎥 וידאו",
+            "document": "📄 מסמך",
+            "voice": "🎤 הודעה קולית",
+            "audio": "🎵 אודיו",
+            "animation": "🎞️ אנימציה",
+            "sticker": "😊 סטיקר",
+        }
+        label = labels.get(message_type)
+        if not label:
+            return None
+        return f"{_sender_prefix(sender_role)} {_sender_label(sender_role)} · {label} · פתח"
+
     for msg in messages[-20:]:
         role = "👤 משתמש" if msg["sender_role"] == "user" else "🛡 אדמין"
         msg_date, msg_time = _fmt_datetime(msg.get("created_at"))
@@ -1873,17 +1895,45 @@ def _build_chat_view(vid: int, chat_id: int):
         elif mtype == "photo":
             lines.append(f"<b>{role}:</b> 📷 תמונה <i>({msg_date} {msg_time})</i>")
             media_buttons.append([InlineKeyboardButton(
-                f"📷 הצג ({msg['id']})",
+                _media_button_label(msg["sender_role"], mtype) or f"📷 תמונה · פתח",
                 callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
             )])
         elif mtype == "video":
-            lines.append(f"<b>{role}:</b> 🎥 סרטון <i>({msg_date} {msg_time})</i>")
+            lines.append(f"<b>{role}:</b> 🎥 וידאו <i>({msg_date} {msg_time})</i>")
             media_buttons.append([InlineKeyboardButton(
-                f"🎥 הצג ({msg['id']})",
+                _media_button_label(msg["sender_role"], mtype) or f"🎥 וידאו · פתח",
                 callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
             )])
         elif mtype == "document":
-            lines.append(f"<b>{role}:</b> 📎 מסמך <i>({msg_date} {msg_time})</i>")
+            lines.append(f"<b>{role}:</b> 📄 מסמך <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"📄 מסמך · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "voice":
+            lines.append(f"<b>{role}:</b> 🎤 הודעה קולית <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"🎤 הודעה קולית · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "audio":
+            lines.append(f"<b>{role}:</b> 🎵 אודיו <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"🎵 אודיו · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "animation":
+            lines.append(f"<b>{role}:</b> 🎞️ אנימציה <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"🎞️ אנימציה · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "sticker":
+            lines.append(f"<b>{role}:</b> 😊 סטיקר <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"😊 סטיקר · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
 
     if not messages:
         lines.append("אין הודעות עדיין.")
@@ -2096,6 +2146,40 @@ async def _show_chat_media(
             chat_id=update.callback_query.message.chat_id,
             video=msg["file_id"],
             caption="🎥 סרטון מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "document":
+        await context.bot.send_document(
+            chat_id=update.callback_query.message.chat_id,
+            document=msg["file_id"],
+            caption="📄 מסמך מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "voice":
+        await context.bot.send_voice(
+            chat_id=update.callback_query.message.chat_id,
+            voice=msg["file_id"],
+            caption="🎤 הודעה קולית מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "audio":
+        await context.bot.send_audio(
+            chat_id=update.callback_query.message.chat_id,
+            audio=msg["file_id"],
+            caption="🎵 אודיו מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "animation":
+        await context.bot.send_animation(
+            chat_id=update.callback_query.message.chat_id,
+            animation=msg["file_id"],
+            caption="🎞️ אנימציה מהשיחה",
+            reply_markup=back_kb,
+        )
+    elif msg["message_type"] == "sticker":
+        await context.bot.send_sticker(
+            chat_id=update.callback_query.message.chat_id,
+            sticker=msg["file_id"],
             reply_markup=back_kb,
         )
 

@@ -57,6 +57,7 @@ _SUB_CHAT_ID = "subs_active_chat_id"
 _SUBS_MEDIA_PREVIEW_MSG_ID = "subs_media_preview_msg_id"
 _SUBS_MEDIA_PREVIEW_CHAT_ID = "subs_media_preview_chat_id"
 _SUBS_MEDIA_META_PREFIX = "__SUBS_MEDIA__:"
+_SUBS_MEDIA_META_PREFIX_LEGACY = "SUBS_MEDIA__:"
 
 
 async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -487,7 +488,7 @@ def _parse_chat_payload(data: str, prefix: str):
         page = int(parts[1])
         subscriber_id = int(parts[2])
         chat_id = int(parts[3])
-        if origin not in {"L", "S"} or page <= 0 or subscriber_id <= 0 or chat_id <= 0:
+        if origin not in {"L", "S"} or page <= 0 or subscriber_id <= 0 or chat_id < 0:
             return None
         return origin, page, subscriber_id, chat_id
     except (TypeError, ValueError):
@@ -632,9 +633,14 @@ def _pack_media_meta(media_type: str, caption: str | None) -> str:
 def _unpack_media_meta(message_text: str | None):
     if not message_text or not isinstance(message_text, str):
         return None
-    if not message_text.startswith(_SUBS_MEDIA_META_PREFIX):
+    prefix = None
+    if message_text.startswith(_SUBS_MEDIA_META_PREFIX):
+        prefix = _SUBS_MEDIA_META_PREFIX
+    elif message_text.startswith(_SUBS_MEDIA_META_PREFIX_LEGACY):
+        prefix = _SUBS_MEDIA_META_PREFIX_LEGACY
+    if not prefix:
         return None
-    raw = message_text[len(_SUBS_MEDIA_META_PREFIX):]
+    raw = message_text[len(prefix):]
     try:
         data = json.loads(raw)
         media_type = str(data.get("media_type") or "")
@@ -675,11 +681,11 @@ def _media_label(media_type: str) -> str:
     labels = {
         "photo": "📷 תמונה",
         "video": "🎥 וידאו",
-        "document": "📎 מסמך",
-        "voice": "🎙️ הודעת קול",
+        "document": "📄 מסמך",
+        "voice": "🎤 הודעה קולית",
         "audio": "🎵 אודיו",
-        "animation": "🌀 אנימציה",
-        "sticker": "🏷️ מדבקה",
+        "animation": "🎞️ אנימציה",
+        "sticker": "😊 סטיקר",
     }
     return labels.get(media_type, "🗂️ מדיה")
 
@@ -740,19 +746,12 @@ async def _open_chat_screen(update: Update, data: str) -> None:
         await update.callback_query.answer("⚠️ מנוי לא נמצא.", show_alert=True)
         return
 
-    admin_id = update.callback_query.from_user.id
-    chat_id = open_subscriber_chat(subscriber_id=subscriber_id, admin_id=admin_id)
-    try:
-        await update.get_bot().send_message(
-            chat_id=subscriber["telegram_id"],
-            text=(
-                "📩 נפתחה שיחה בינך לבין צוות הבוט.\n"
-                "כעת ניתן להשיב ישירות להודעות.\n"
-                "תודה."
-            ),
-        )
-    except Exception:
-        pass
+    open_chat = get_open_subscriber_chat(subscriber_id)
+    if open_chat:
+        chat_id = int(open_chat.get("id") or 0)
+    else:
+        chats = list_subscriber_chats(subscriber_id)
+        chat_id = int(chats[0].get("id") or 0) if chats else 0
     await _render_chat_screen(update, origin, page, subscriber_id, chat_id)
 
 
@@ -770,6 +769,10 @@ async def _close_chat_screen(update: Update, data: str) -> None:
         return await _invalid_callback(update)
     origin, page, subscriber_id, chat_id = payload
     from services.subscriber_chat_service import close_chat
+
+    if chat_id <= 0:
+        await update.callback_query.answer("⚠️ אין שיחה פתוחה לסגירה.", show_alert=True)
+        return await _render_chat_screen(update, origin, page, subscriber_id, chat_id)
 
     close_chat(chat_id)
     subscriber = get_subscriber_card(subscriber_id)
@@ -803,13 +806,14 @@ async def _render_chat_screen(
 
 def _compose_chat_screen(origin: str, page: int, subscriber_id: int, chat_id: int):
     subscriber = get_subscriber_card(subscriber_id)
-    chat = get_subscriber_chat(chat_id)
-    if not subscriber or not chat:
+    if not subscriber:
         return None, None
 
-    messages = get_subscriber_chat_history(chat_id)
+    chat = get_subscriber_chat(chat_id) if chat_id > 0 else None
+
+    messages = get_subscriber_chat_history(chat_id) if chat else []
     display_name = subscriber.get("full_name") or (f"@{subscriber['username']}" if subscriber.get("username") else str(subscriber["telegram_id"]))
-    status = "🟢 פתוחה" if chat.get("is_open") else "🔴 סגורה"
+    status = "🟢 פתוחה" if chat and chat.get("is_open") else "🔴 סגורה"
 
     lines = [
         f"💬 <b>שיחה עם {display_name}</b>",
@@ -830,8 +834,8 @@ def _compose_chat_screen(origin: str, page: int, subscriber_id: int, chat_id: in
         lines.append("אין הודעות עדיין.")
 
     rows = []
-    if chat.get("is_open"):
-        rows.append([InlineKeyboardButton("✉️ שלח הודעה", callback_data=f"SUBS_CHAT_SEND_{origin}_{page}_{subscriber_id}_{chat_id}")])
+    rows.append([InlineKeyboardButton("✉️ שלח הודעה", callback_data=f"SUBS_CHAT_SEND_{origin}_{page}_{subscriber_id}_{chat_id}")])
+    if chat and chat.get("is_open"):
         rows.append([InlineKeyboardButton("🔒 סגור שיחה", callback_data=f"SUBS_CHAT_CLOSE_{origin}_{page}_{subscriber_id}_{chat_id}")])
     for m in messages[-20:]:
         media_meta = _unpack_media_meta(m.get("message_text"))
@@ -852,11 +856,32 @@ async def _prompt_chat_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if payload is None:
         return await _invalid_callback(update)
     origin, page, subscriber_id, chat_id = payload
+
+    admin_id = update.callback_query.from_user.id
+    effective_chat_id = chat_id
+
+    existing_chat = get_subscriber_chat(chat_id) if chat_id > 0 else None
+    if not existing_chat or not existing_chat.get("is_open"):
+        effective_chat_id = open_subscriber_chat(subscriber_id=subscriber_id, admin_id=admin_id)
+        subscriber = get_subscriber_card(subscriber_id)
+        if subscriber:
+            try:
+                await context.bot.send_message(
+                    chat_id=subscriber["telegram_id"],
+                    text=(
+                        "📩 נפתחה שיחה בינך לבין צוות הבוט.\n"
+                        "כעת ניתן להשיב ישירות להודעות.\n"
+                        "תודה."
+                    ),
+                )
+            except Exception:
+                pass
+
     context.user_data[_STATE] = _AWAIT_CHAT_MSG
     context.user_data[_SUB_ORIGIN] = origin
     context.user_data[_SUB_PAGE] = page
     context.user_data[_SUB_ID] = subscriber_id
-    context.user_data[_SUB_CHAT_ID] = chat_id
+    context.user_data[_SUB_CHAT_ID] = effective_chat_id
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
     context.user_data[_MSG_ID] = update.callback_query.message.message_id
 
@@ -864,7 +889,7 @@ async def _prompt_chat_message(update: Update, context: ContextTypes.DEFAULT_TYP
         update,
         text="✉️ <b>שלח הודעה למנוי</b>\n\nכתוב הודעה:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_CHAT_VIEW_{origin}_{page}_{subscriber_id}_{chat_id}")],
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_CHAT_VIEW_{origin}_{page}_{subscriber_id}_{effective_chat_id}")],
         ]),
         parse_mode="HTML",
     )
@@ -1366,7 +1391,9 @@ async def handle_subscriptions_input(
         panel_msg_id = context.user_data.get(_MSG_ID)
         context.user_data.pop(_STATE, None)
 
-        if not subscriber_id or not chat_id:
+        if not subscriber_id:
+            return
+        if chat_id < 0:
             return
 
         try:
@@ -1375,16 +1402,19 @@ async def handle_subscriptions_input(
             pass
 
         admin_id = update.message.from_user.id
+        effective_chat_id = chat_id
+
         if media:
             add_subscriber_chat_message(
-                chat_id=chat_id,
+                chat_id=effective_chat_id,
                 sender_role="admin",
                 sender_id=admin_id,
                 message_text=_pack_media_meta(media["media_type"], media.get("caption")),
+                file_id=media["file_id"],
             )
         else:
             add_subscriber_chat_message(
-                chat_id=chat_id,
+                chat_id=effective_chat_id,
                 sender_role="admin",
                 sender_id=admin_id,
                 message_text=text,
@@ -1406,7 +1436,7 @@ async def handle_subscriptions_input(
             except Exception:
                 pass
 
-        rendered_text, rendered_kb = _compose_chat_screen(origin, page, subscriber_id, chat_id)
+        rendered_text, rendered_kb = _compose_chat_screen(origin, page, subscriber_id, effective_chat_id)
         if rendered_text and panel_chat_id and panel_msg_id:
             edited = await _safe_bot_edit(
                 context,
