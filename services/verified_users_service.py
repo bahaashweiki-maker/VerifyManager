@@ -738,6 +738,11 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
 
     with get_connection() as conn:
         conn.row_factory = _row_factory
+        reset_row = conn.execute(
+            "SELECT reset_at FROM user_history_resets WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        reset_at = reset_row["reset_at"] if reset_row else None
 
         for r in conn.execute(
             """
@@ -749,8 +754,9 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             FROM user_warnings w
             LEFT JOIN users u ON u.telegram_id = w.created_by
             WHERE w.telegram_id = ?
+                            AND (? IS NULL OR w.created_at > ?)
             """,
-            (telegram_id,),
+                        (telegram_id, reset_at, reset_at),
         ).fetchall():
             rows.append({
                 "type": "warning",
@@ -770,8 +776,9 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             FROM user_suspensions s
             LEFT JOIN users u ON u.telegram_id = s.created_by
             WHERE s.telegram_id = ?
+                            AND (? IS NULL OR s.created_at > ?)
             """,
-            (telegram_id,),
+                        (telegram_id, reset_at, reset_at),
         ).fetchall():
             rows.append({
                 "type":        "suspension",
@@ -792,8 +799,9 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             FROM user_messages_log m
             LEFT JOIN users u ON u.telegram_id = m.sent_by
             WHERE m.telegram_id = ?
+                            AND (? IS NULL OR m.sent_at > ?)
             """,
-            (telegram_id,),
+                        (telegram_id, reset_at, reset_at),
         ).fetchall():
             rows.append({
                 "type": "message",
@@ -811,8 +819,9 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             FROM user_admin_notes n
             LEFT JOIN users u ON u.telegram_id = n.created_by
             WHERE n.telegram_id = ?
+                            AND (? IS NULL OR n.created_at > ?)
             """,
-            (telegram_id,),
+                        (telegram_id, reset_at, reset_at),
         ).fetchall():
             rows.append({
                 "type": "note",
@@ -831,8 +840,9 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
             FROM user_action_log a
             LEFT JOIN users u ON u.telegram_id = a.performed_by
             WHERE a.telegram_id = ?
+                            AND (? IS NULL OR a.created_at > ?)
             """,
-            (telegram_id,),
+                        (telegram_id, reset_at, reset_at),
         ).fetchall():
             rows.append({
                 "type": r["action"],
@@ -856,6 +866,29 @@ def get_user_history(telegram_id: int, limit: int = 25) -> list:
         })
 
     return result
+
+
+def delete_user_history(telegram_id: int) -> bool:
+    """מאפס את היסטוריית הפעולות של המשתמש בלי למחוק מידע אחר."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM user_action_log WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_history_resets (telegram_id, reset_at)
+                VALUES (?, datetime('now'))
+                ON CONFLICT(telegram_id) DO UPDATE SET reset_at = excluded.reset_at
+                """,
+                (telegram_id,),
+            )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.error("delete_user_history failed: %s", exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

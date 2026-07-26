@@ -109,6 +109,7 @@ from services.verified_users_service import (
     delete_admin_note,
     # היסטוריה
     get_user_history,
+    delete_user_history,
 )
 
 from services.verification_chats_service import (
@@ -326,6 +327,14 @@ async def verified_users_route(
             return await _view_note(update, context, vid, nid)
         else:
             return await _show_notes_list(update, context, int(parts[0]) if parts else 0)
+
+    if data.startswith("VUSERS_HISTORY_CLEAR_OK_"):
+        vid = int(data[len("VUSERS_HISTORY_CLEAR_OK_"):])
+        return await _execute_clear_history(update, context, vid)
+
+    if data.startswith("VUSERS_HISTORY_CLEAR_"):
+        vid = int(data[len("VUSERS_HISTORY_CLEAR_"):])
+        return await _confirm_clear_history(update, context, vid)
 
     if data.startswith("VUSERS_NOTES_"):
         vid = int(data[len("VUSERS_NOTES_"):])
@@ -1575,10 +1584,37 @@ async def _show_history(
     await update.callback_query.edit_message_text(
         text=f"📜 <b>היסטוריית פעולות</b>\n\n{body}",
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑️ איפוס היסטוריה", callback_data=f"VUSERS_HISTORY_CLEAR_{vid}")],
             [InlineKeyboardButton("🔙 חזרה", callback_data=f"VUSERS_VIEW_{vid}")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def _confirm_clear_history(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    await update.callback_query.edit_message_text(
+        text="האם למחוק את כל היסטוריית הפעולות של המשתמש?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן", callback_data=f"VUSERS_HISTORY_CLEAR_OK_{vid}")],
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"VUSERS_HISTORY_{vid}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _execute_clear_history(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, vid: int
+) -> None:
+    v = get_verified_user_by_id(vid)
+    if not v:
+        await update.callback_query.answer("⚠️ משתמש לא נמצא.", show_alert=True)
+        return
+
+    delete_user_history(v["telegram_id"])
+    await update.callback_query.answer("✅ היסטוריית הפעולות אופסה בהצלחה.")
+    await _show_history(update, context, vid)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

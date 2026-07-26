@@ -150,6 +150,13 @@ def init_verified_users_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_history_resets (
+                telegram_id INTEGER PRIMARY KEY,
+                reset_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
         conn.commit()
     logger.info("verified_users_db initialized (v3 — action log added).")
 
