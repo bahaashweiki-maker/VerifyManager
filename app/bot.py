@@ -25,6 +25,11 @@ from admin.verify_admin import verify_admin_menu
 from admin.verify_media import verify_media_menu
 from admin.publishing_admin import build_publishing_handler
 from admin.admin_manager import admin_manager_route, handle_admin_mgr_input
+from admin.subscriptions_admin import (
+    subscriptions_admin_route,
+    handle_subscriptions_input,
+    handle_subscriber_user_message,
+)
 from admin.verified_users_admin import (
     verified_users_route,
     handle_verified_users_input,
@@ -34,8 +39,10 @@ from admin.verified_users_admin import (
 from database.publishing_models import init_publishing_db
 from database.permission_models import init_permissions_db
 from database.verified_users_models import init_verified_users_db
+from database.subscriptions_models import init_subscriptions_db
 from services.admin_service import is_super_admin
 from services.permission_service import has_permission
+from services.subscribers_service import register_or_touch_subscriber
 
 
 # ─────────────────────────────────────────
@@ -105,6 +112,11 @@ async def _reject_if_suspended(update: Update, context: ContextTypes.DEFAULT_TYP
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _reject_if_suspended(update, context):
         return
+    if update.effective_user:
+        try:
+            register_or_touch_subscriber(update.effective_user)
+        except Exception:
+            pass
     await render_home(context.bot, update.effective_chat.id)
 
 
@@ -212,6 +224,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return await verified_users_route(update, context)
 
+    # 6ג. מערכת מנויים — סופר-אדמין או בעל הרשאת subscriptions.view
+    if data == "ADMIN_SUBSCRIPTIONS" or data.startswith("SUBS_"):
+        uid = query.from_user.id
+        if not is_super_admin(uid) and not has_permission(uid, "subscriptions.view"):
+            await query.answer("⛔ אין לך הרשאה למערכת מנויים.", show_alert=True)
+            return
+        return await subscriptions_admin_route(update, context)
+
     # 7. HOME — דרך Publishing Module בלבד
     if data == "HOME":
         try:
@@ -255,6 +275,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # קלט ממודול ניהול מאומתים (כולל הודעה בשיחה ע"י אדמין)
     if context.user_data.get("vusers_state") and update.message and update.message.text:
         return await handle_verified_users_input(update, context)
+    # קלט ממודול מנויים (חיפוש)
+    if context.user_data.get("subs_state") and update.message and update.message.text:
+        return await handle_subscriptions_input(update, context)
     # קלט ממסך האימות הישן (VERIFY_MESSAGE_) חייב להישאר מופרד ממסלול שיחות האימות
     if update.message and update.effective_user:
         admin_state = context.user_data.get(update.effective_user.id)
@@ -272,6 +295,14 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         except Exception:
             pass
+    # הודעת משתמש לשיחת מנויים פתוחה
+    if update.message:
+        try:
+            handled = await handle_subscriber_user_message(update, context)
+            if handled:
+                return
+        except Exception:
+            pass
     # ברירת מחדל — תהליך אימות
     await process_verify(update, context)
 
@@ -283,6 +314,7 @@ def main():
     init_publishing_db()
     init_permissions_db()
     init_verified_users_db()
+    init_subscriptions_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 

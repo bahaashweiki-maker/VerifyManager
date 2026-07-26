@@ -51,6 +51,9 @@ PERMISSIONS: list[dict[str, str]] = [
     # ─── הגדרות ──────────────────────────────────────────────────────────────
     {"key": "settings.edit",    "label": "⚙️ עריכת הגדרות"},
 
+    # ─── מערכת מנויים ────────────────────────────────────────────────────────
+    {"key": "subscriptions.view", "label": "👥 מערכת מנויים"},
+
     # ─── מודולים עתידיים — פשוט בטל-הערה כשבונים ────────────────────────────
     # {"key": "ai.manage",        "label": "🤖 ניהול בינה מלאכותית"},
     # {"key": "shop.manage",      "label": "🛒 ניהול חנות"},
@@ -100,6 +103,11 @@ ADMIN_MODULES: list[dict] = [
         "label":    "⚙️ הגדרות",
         "callback": "ADMIN_SETTINGS",
         "requires": ["settings.edit"],
+    },
+    {
+        "label":    "👥 מערכת מנויים",
+        "callback": "ADMIN_SUBSCRIPTIONS",
+        "requires": ["subscriptions.view"],
     },
 
     # ─── מודולים עתידיים — פשוט בטל-הערה כשבונים ────────────────────────────
