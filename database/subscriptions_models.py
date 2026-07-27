@@ -84,11 +84,23 @@ def init_subscriptions_db() -> None:
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 title           TEXT,
                 content_text    TEXT,
+                media_type      TEXT,
+                file_id         TEXT,
+                target_type     TEXT NOT NULL DEFAULT 'all',
+                target_value    TEXT,
                 status          TEXT NOT NULL DEFAULT 'draft',
                 scheduled_at    TEXT,
+                is_recurring    INTEGER NOT NULL DEFAULT 0,
+                repeat_every_minutes INTEGER,
+                next_run_at     TEXT,
+                last_sent_at    TEXT,
+                sent_success_count INTEGER NOT NULL DEFAULT 0,
+                sent_fail_count INTEGER NOT NULL DEFAULT 0,
+                total_targets   INTEGER NOT NULL DEFAULT 0,
                 auto_delete_at  TEXT,
                 created_by      INTEGER,
-                created_at      TEXT DEFAULT (datetime('now'))
+                created_at      TEXT DEFAULT (datetime('now')),
+                updated_at      TEXT DEFAULT (datetime('now'))
             )
             """
         )
@@ -154,4 +166,30 @@ def init_subscriptions_db() -> None:
 
         conn.commit()
 
+    _migrate_add_column("subscriber_publications", "media_type", "TEXT")
+    _migrate_add_column("subscriber_publications", "file_id", "TEXT")
+    _migrate_add_column("subscriber_publications", "target_type", "TEXT NOT NULL DEFAULT 'all'")
+    _migrate_add_column("subscriber_publications", "target_value", "TEXT")
+    _migrate_add_column("subscriber_publications", "is_recurring", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column("subscriber_publications", "repeat_every_minutes", "INTEGER")
+    _migrate_add_column("subscriber_publications", "next_run_at", "TEXT")
+    _migrate_add_column("subscriber_publications", "last_sent_at", "TEXT")
+    _migrate_add_column("subscriber_publications", "sent_success_count", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column("subscriber_publications", "sent_fail_count", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column("subscriber_publications", "total_targets", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column("subscriber_publications", "updated_at", "TEXT DEFAULT (datetime('now'))")
+
     logger.info("subscriptions_db initialized")
+
+
+def _migrate_add_column(table: str, column: str, definition: str) -> None:
+    try:
+        with get_connection() as conn:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column in existing:
+                return
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            conn.commit()
+    except Exception:
+        # Best-effort migration: keep startup resilient for existing deployments.
+        pass

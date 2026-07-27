@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
@@ -38,6 +39,19 @@ from services.subscriber_chat_service import (
     add_subscriber_chat_message,
     clear_subscriber_chat_history,
 )
+from services.subscriber_publication_service import (
+    count_publication_recipients,
+    create_publication_record,
+    dispatch_publication,
+    get_publication,
+    list_available_publication_permissions,
+    list_publication_buttons,
+    list_publications_paged,
+    publication_stats,
+    remove_publication,
+    update_publication_record,
+)
+from services.verified_users_service import get_all_catalogs
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +60,11 @@ logger = logging.getLogger(__name__)
 _STATE = "subs_state"
 _AWAIT_SEARCH = "SUBS_AWAIT_SEARCH"
 _AWAIT_CHAT_MSG = "SUBS_AWAIT_CHAT_MSG"
+_AWAIT_PUB_CONTENT = "SUBS_AWAIT_PUB_CONTENT"
+_AWAIT_PUB_TARGET_VALUE = "SUBS_AWAIT_PUB_TARGET_VALUE"
+_AWAIT_PUB_BUTTONS = "SUBS_AWAIT_PUB_BUTTONS"
+_AWAIT_PUB_SEARCH = "SUBS_AWAIT_PUB_SEARCH"
+_AWAIT_PUB_SCHEDULE = "SUBS_AWAIT_PUB_SCHEDULE"
 _SEARCH_TERM = "subs_search_term"
 _CHAT_ID = "subs_chat_id"
 _MSG_ID = "subs_msg_id"
@@ -57,6 +76,15 @@ _SUBS_MEDIA_PREVIEW_MSG_ID = "subs_media_preview_msg_id"
 _SUBS_MEDIA_PREVIEW_CHAT_ID = "subs_media_preview_chat_id"
 _SUBS_MEDIA_META_PREFIX = "__SUBS_MEDIA__:"
 _SUBS_MEDIA_META_PREFIX_LEGACY = "SUBS_MEDIA__:"
+_PUB_DRAFT = "subs_pub_draft"
+_PUB_LIST_PAGE = "subs_pub_list_page"
+_PUB_SEARCH_TERM = "subs_pub_search_term"
+_PUB_TARGET_OPTIONS = "subs_pub_target_options"
+_PUB_PREVIEW_MSG_ID = "subs_pub_preview_msg_id"
+_PUB_PREVIEW_CHAT_ID = "subs_pub_preview_chat_id"
+_PUB_PREVIEW_CONFIRMED = "subs_pub_preview_confirmed"
+_PUB_SCHEDULE_JOBS: dict[int, str] = {}
+_PUB_RECURRING_JOBS: dict[int, str] = {}
 
 
 async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -204,19 +232,95 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         return await _show_suspend_menu(update, data)
 
     if data == "SUBS_PUB_MENU":
+        await _bootstrap_publication_jobs(context)
+        await _clear_publication_preview_message(context)
         return await _show_publications_menu(update)
 
     if data == "SUBS_PUB_CREATE":
-        return await _show_publication_create_flow(update)
+        return await _start_publication_create(update, context)
+
+    if data == "SUBS_PUB_PREVIEW":
+        return await _show_publication_preview(update, context)
+
+    if data.startswith("SUBS_PUB_TARGET_"):
+        return await _set_publication_target(update, context, data)
+
+    if data == "SUBS_PUB_EDIT_CONTENT":
+        return await _prompt_publication_content(update, context)
+
+    if data == "SUBS_PUB_EDIT_BUTTONS":
+        return await _prompt_publication_buttons(update, context)
+
+    if data == "SUBS_PUB_SEND_NOW":
+        return await _send_publication_now(update, context)
 
     if data == "SUBS_PUB_SCHEDULE":
-        return await _show_coming_soon(update, "⏱️ תזמון פרסום", "SUBS_PUB_MENU")
+        return await _prompt_publication_schedule(update, context)
+
+    if data.startswith("SUBS_PUB_DELAY_"):
+        return await _set_publication_delay(update, context, data)
+
+    if data.startswith("SUBS_PUB_RECUR_"):
+        return await _set_publication_recurring(update, context, data)
+
+    if data == "SUBS_PUB_CANCEL_DRAFT":
+        await _clear_publication_preview_message(context)
+        _clear_publication_draft(context)
+        return await _show_publications_menu(update)
+
+    if data == "SUBS_PUB_LIST":
+        return await _show_publications_list(update, context, page=1)
+
+    if data.startswith("SUBS_PUB_LIST_PAGE_"):
+        page = _parse_positive_int(data[len("SUBS_PUB_LIST_PAGE_"):])
+        if page is None:
+            return await _invalid_callback(update)
+        return await _show_publications_list(update, context, page=page)
+
+    if data.startswith("SUBS_PUB_VIEW_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_VIEW_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _show_publication_details(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_DELETE_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_DELETE_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _delete_publication(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_RUN_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_RUN_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _run_publication_now(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_CANCEL_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_CANCEL_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _cancel_publication(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_RESUME_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_RESUME_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _resume_publication(update, context, pub_id)
+
+    if data == "SUBS_PUB_SEARCH":
+        return await _prompt_publication_search(update, context)
 
     if data == "SUBS_PUB_AUTO_DELETE":
-        return await _show_coming_soon(update, "🧹 מחיקה אוטומטית", "SUBS_PUB_MENU")
+        return await update.callback_query.answer("ℹ️ מחיקה אוטומטית תבוצע לפי auto_delete_at כאשר יוגדר.", show_alert=True)
 
     if data == "SUBS_PUB_STATS":
-        return await _show_coming_soon(update, "📈 סטטיסטיקת פרסום", "SUBS_PUB_MENU")
+        return await _show_publication_stats_menu(update, context)
+
+    if data.startswith("SUBS_PUB_STATS_VIEW_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_STATS_VIEW_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _show_publication_stats_for_one(update, context, pub_id)
 
     if data == "SUBS_GLOBAL_STATS":
         return await _show_stats(update)
@@ -364,8 +468,7 @@ async def _show_publications_menu(update: Update) -> None:
         text="📣 <b>פרסום למנויים</b>\n\nבחר פעולה:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
-            [InlineKeyboardButton("⏱️ תזמון", callback_data="SUBS_PUB_SCHEDULE")],
-            [InlineKeyboardButton("🧹 מחיקה אוטומטית", callback_data="SUBS_PUB_AUTO_DELETE")],
+            [InlineKeyboardButton("📚 רשימת פרסומים", callback_data="SUBS_PUB_LIST")],
             [InlineKeyboardButton("📈 סטטיסטיקת פרסום", callback_data="SUBS_PUB_STATS")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_MAIN")],
         ]),
@@ -373,25 +476,766 @@ async def _show_publications_menu(update: Update) -> None:
     )
 
 
-async def _show_publication_create_flow(update: Update) -> None:
+def _clear_publication_draft(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(_PUB_DRAFT, None)
+    context.user_data.pop(_PUB_TARGET_OPTIONS, None)
+    context.user_data.pop(_PUB_PREVIEW_CONFIRMED, None)
+
+
+async def _clear_publication_preview_message(context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg_id = context.user_data.pop(_PUB_PREVIEW_MSG_ID, None)
+    chat_id = context.user_data.pop(_PUB_PREVIEW_CHAT_ID, None)
+    if not msg_id or not chat_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=int(msg_id))
+    except Exception:
+        pass
+
+
+def _catalog_name_by_slug(slug: str | None) -> str | None:
+    if not slug:
+        return None
+    try:
+        for cat in get_all_catalogs():
+            if str(cat.get("slug") or "") == str(slug):
+                return str(cat.get("name") or slug)
+    except Exception:
+        return None
+    return None
+
+
+def _publication_target_label(target_type: str, target_value: str | None) -> str:
+    if target_type == "catalog":
+        display = _catalog_name_by_slug(target_value) or (target_value or "-")
+        return f"קטלוג: {display}"
+    labels = {
+        "all": "לכל המשתמשים",
+        "active": "משתמשים פעילים",
+        "suspended": "משתמשים מושעים",
+        "verified": "משתמשים מאומתים",
+        "permission": f"הרשאה: {target_value or '-'}",
+    }
+    return labels.get(target_type, target_type)
+
+
+def _publication_status_label(status: str) -> str:
+    return {
+        "draft": "טיוטה",
+        "scheduled": "ממתין",
+        "active": "מחזורי פעיל",
+        "sent": "הסתיים",
+        "canceled": "בוטל",
+    }.get(status, status)
+
+
+def _draft_preview_text(draft: dict) -> str:
+    content = (draft.get("content_text") or "").strip()
+    media_type = draft.get("media_type") or "אין"
+    target_type = draft.get("target_type") or "all"
+    target_value = draft.get("target_value")
+    buttons = draft.get("buttons") or []
+    schedule = draft.get("schedule_at") or "מיידי"
+    recurring = draft.get("recurring_every")
+    recurring_text = f"כל {recurring} דקות" if recurring else "לא"
+    recipients = count_publication_recipients(target_type, target_value)
+    content_preview = content[:300] if content else "(ללא טקסט)"
+    return (
+        "🧾 <b>תצוגה מקדימה לפרסום</b>\n\n"
+        f"🎯 יעד: <b>{_publication_target_label(target_type, target_value)}</b>\n"
+        f"👥 נמענים: <b>{recipients}</b>\n"
+        f"🎞️ מדיה: <b>{media_type}</b>\n"
+        f"⏱️ תזמון: <b>{schedule}</b>\n"
+        f"🔁 מחזורי: <b>{recurring_text}</b>\n"
+        f"🔘 כפתורים: <b>{len(buttons)}</b>\n\n"
+        f"💬 תוכן:\n{content_preview}"
+    )
+
+
+def _publication_targets_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 לכל המשתמשים", callback_data="SUBS_PUB_TARGET_all")],
+        [InlineKeyboardButton("✅ משתמשים פעילים", callback_data="SUBS_PUB_TARGET_active")],
+        [InlineKeyboardButton("⛔ משתמשים מושעים", callback_data="SUBS_PUB_TARGET_suspended")],
+        [InlineKeyboardButton("🪪 משתמשים מאומתים", callback_data="SUBS_PUB_TARGET_verified")],
+        [InlineKeyboardButton("📂 לפי קטלוג", callback_data="SUBS_PUB_TARGET_catalog")],
+        [InlineKeyboardButton("🔐 לפי הרשאה", callback_data="SUBS_PUB_TARGET_permission")],
+        [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_PREVIEW")],
+    ])
+
+
+def _publication_preview_actions_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎯 יעד פרסום", callback_data="SUBS_PUB_TARGET_all")],
+        [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+        [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+        [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+        [InlineKeyboardButton("🔁 פרסום מחזורי", callback_data="SUBS_PUB_RECUR_60")],
+        [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+    ])
+
+
+def _draft_publication_keyboard(draft: dict) -> InlineKeyboardMarkup | None:
+    buttons = draft.get("buttons") or []
+    rows = []
+    for b in buttons:
+        title = str(b.get("title") or "").strip()
+        url = str(b.get("url") or "").strip()
+        if title and url.startswith(("http://", "https://", "tg://")):
+            rows.append([InlineKeyboardButton(title, url=url)])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def _send_real_publication_preview(context: ContextTypes.DEFAULT_TYPE, chat_id: int, draft: dict) -> None:
+    await _clear_publication_preview_message(context)
+
+    keyboard = _draft_publication_keyboard(draft)
+    content = (draft.get("content_text") or "").strip()
+    media_type = str(draft.get("media_type") or "").strip()
+    file_id = str(draft.get("file_id") or "").strip()
+
+    preview_msg = None
+    try:
+        if media_type and file_id:
+            if media_type == "photo":
+                preview_msg = await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "video":
+                preview_msg = await context.bot.send_video(chat_id=chat_id, video=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "animation":
+                preview_msg = await context.bot.send_animation(chat_id=chat_id, animation=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "document":
+                preview_msg = await context.bot.send_document(chat_id=chat_id, document=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "audio":
+                preview_msg = await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "voice":
+                preview_msg = await context.bot.send_voice(chat_id=chat_id, voice=file_id, caption=content or None, reply_markup=keyboard)
+            elif media_type == "video_note":
+                preview_msg = await context.bot.send_video_note(chat_id=chat_id, video_note=file_id)
+                if content or keyboard:
+                    preview_msg = await context.bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+            elif media_type == "sticker":
+                preview_msg = await context.bot.send_sticker(chat_id=chat_id, sticker=file_id)
+                if content or keyboard:
+                    preview_msg = await context.bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+            else:
+                preview_msg = await context.bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+        else:
+            preview_msg = await context.bot.send_message(chat_id=chat_id, text=content or "(ללא טקסט)", reply_markup=keyboard)
+    except Exception:
+        preview_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ לא ניתן להציג מקדימה את המדיה כרגע. בדוק שהקובץ עדיין זמין.",
+        )
+
+    if preview_msg:
+        context.user_data[_PUB_PREVIEW_MSG_ID] = preview_msg.message_id
+        context.user_data[_PUB_PREVIEW_CHAT_ID] = preview_msg.chat_id
+
+
+async def _start_publication_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _clear_publication_preview_message(context)
+    context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+    context.user_data[_PUB_DRAFT] = {
+        "title": "פרסום",
+        "content_text": "",
+        "media_type": None,
+        "file_id": None,
+        "target_type": "all",
+        "target_value": None,
+        "buttons": [],
+        "schedule_at": None,
+        "recurring_every": None,
+    }
+    context.user_data[_STATE] = _AWAIT_PUB_CONTENT
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+
     await _safe_query_edit(
         update,
         text=(
             "📝 <b>יצירת פרסום</b>\n\n"
-            "סדר העבודה במערכת הפרסום:\n"
-            "1. כתיבת הטקסט\n"
-            "2. הוספת תמונה/וידאו/מסמך (אופציונלי)\n"
-            "3. בחירה האם להוסיף כפתורים\n"
-            "4. תצוגה מקדימה\n"
-            "5. תזמון או שליחה מיידית\n"
-            "6. אפשרות למחיקה אוטומטית\n\n"
-            "בקרוב"
+            "שלח עכשיו הודעה אחת עם טקסט ו/או מדיה.\n"
+            "נתמך: תמונה, וידאו, GIF, מסמך, אודיו, וייס, וידאו עגול.\n\n"
+            "לאחר השליחה תיפתח תצוגה מקדימה מלאה."
         ),
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _prompt_publication_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _AWAIT_PUB_CONTENT
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text="✏️ שלח מחדש את תוכן הפרסום (טקסט ו/או מדיה).",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _prompt_publication_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _AWAIT_PUB_BUTTONS
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text=(
+            "🔘 <b>כפתורי פרסום</b>\n\n"
+            "שלח כל כפתור בשורה בפורמט:\n"
+            "כותרת | https://example.com\n\n"
+            "דוגמה:\n"
+            "אתר החברה | https://example.com\n"
+            "וואטסאפ | https://wa.me/123456\n\n"
+            "שלח '-' כדי לנקות כפתורים."
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_publication_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    await _send_real_publication_preview(context, update.callback_query.message.chat_id, draft)
+    context.user_data[_PUB_PREVIEW_CONFIRMED] = True
+    await _safe_query_edit(
+        update,
+        text=_draft_preview_text(draft),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+            [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+            [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+            [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+            [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+            [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+            [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _set_publication_target(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    if data == "SUBS_PUB_TARGET_PICK":
+        await _safe_query_edit(
+            update,
+            text="🎯 בחר יעד פרסום:",
+            reply_markup=_publication_targets_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if data.startswith("SUBS_PUB_TARGET_catalog_pick_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_TARGET_catalog_pick_"):])
+        options = context.user_data.get(_PUB_TARGET_OPTIONS) or {}
+        catalog_slugs = options.get("catalog") or []
+        if idx is None or idx > len(catalog_slugs):
+            await update.callback_query.answer("בחירה לא תקינה", show_alert=True)
+            return
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        draft["target_type"] = "catalog"
+        draft["target_value"] = catalog_slugs[idx - 1]
+        context.user_data[_PUB_DRAFT] = draft
+        return await _show_publication_preview(update, context)
+
+    if data.startswith("SUBS_PUB_TARGET_permission_pick_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_TARGET_permission_pick_"):])
+        options = context.user_data.get(_PUB_TARGET_OPTIONS) or {}
+        permission_values = options.get("permission") or []
+        if idx is None or idx > len(permission_values):
+            await update.callback_query.answer("בחירה לא תקינה", show_alert=True)
+            return
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        draft["target_type"] = "permission"
+        draft["target_value"] = permission_values[idx - 1]
+        context.user_data[_PUB_DRAFT] = draft
+        return await _show_publication_preview(update, context)
+
+    target = data[len("SUBS_PUB_TARGET_"):]
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    if target in {"all", "active", "suspended", "verified"}:
+        draft["target_type"] = target
+        draft["target_value"] = None
+        context.user_data[_PUB_DRAFT] = draft
+        return await _show_publication_preview(update, context)
+
+    if target == "catalog":
+        catalogs = get_all_catalogs()
+        if not catalogs:
+            await update.callback_query.answer("לא נמצאו קטלוגים פעילים", show_alert=True)
+            return
+        slugs = [str(c.get("slug") or "") for c in catalogs if c.get("slug")]
+        context.user_data[_PUB_TARGET_OPTIONS] = {
+            **(context.user_data.get(_PUB_TARGET_OPTIONS) or {}),
+            "catalog": slugs,
+        }
+        rows = []
+        for i, c in enumerate(catalogs, start=1):
+            slug = str(c.get("slug") or "")
+            if not slug:
+                continue
+            title = str(c.get("name") or slug)
+            rows.append([InlineKeyboardButton(title[:48], callback_data=f"SUBS_PUB_TARGET_catalog_pick_{i}")])
+        rows.append([InlineKeyboardButton("⬅️ חזרה ליעדים", callback_data="SUBS_PUB_TARGET_PICK")])
+        await _safe_query_edit(
+            update,
+            text="📂 בחר קטלוג יעד מתוך הרשימה:",
+            reply_markup=InlineKeyboardMarkup(rows),
+            parse_mode="HTML",
+        )
+        return
+
+    if target == "permission":
+        permissions = list_available_publication_permissions()
+        if not permissions:
+            await update.callback_query.answer("לא נמצאו הרשאות עם משתמשים", show_alert=True)
+            return
+        context.user_data[_PUB_TARGET_OPTIONS] = {
+            **(context.user_data.get(_PUB_TARGET_OPTIONS) or {}),
+            "permission": permissions,
+        }
+        rows = [
+            [InlineKeyboardButton(p[:48], callback_data=f"SUBS_PUB_TARGET_permission_pick_{i}")]
+            for i, p in enumerate(permissions, start=1)
+        ]
+        rows.append([InlineKeyboardButton("⬅️ חזרה ליעדים", callback_data="SUBS_PUB_TARGET_PICK")])
+        await _safe_query_edit(
+            update,
+            text="🔐 בחר הרשאה יעד מתוך הרשימה:",
+            reply_markup=InlineKeyboardMarkup(rows),
+            parse_mode="HTML",
+        )
+        return
+
+    await update.callback_query.answer("יעד לא תקין", show_alert=True)
+
+
+def _build_send_payload_from_draft(draft: dict) -> dict:
+    return {
+        "title": draft.get("title") or "פרסום",
+        "content_text": draft.get("content_text") or "",
+        "media_type": draft.get("media_type"),
+        "file_id": draft.get("file_id"),
+        "target_type": draft.get("target_type") or "all",
+        "target_value": draft.get("target_value"),
+        "buttons": draft.get("buttons") or [],
+    }
+
+
+async def _send_publication_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני שליחה.", show_alert=True)
+        return
+    if not (draft.get("content_text") or draft.get("file_id")):
+        await update.callback_query.answer("אין תוכן לפרסום.", show_alert=True)
+        return
+
+    payload = _build_send_payload_from_draft(draft)
+    pub_id = create_publication_record(
+        title=payload["title"],
+        content_text=payload["content_text"],
+        media_type=payload["media_type"],
+        file_id=payload["file_id"],
+        target_type=payload["target_type"],
+        target_value=payload["target_value"],
+        status="sending",
+        created_by=update.callback_query.from_user.id,
+        buttons=payload["buttons"],
+    )
+    if pub_id <= 0:
+        await update.callback_query.answer("שגיאה ביצירת פרסום.", show_alert=True)
+        return
+
+    started = datetime.utcnow()
+    result = await dispatch_publication(context.bot, pub_id)
+    elapsed = (datetime.utcnow() - started).total_seconds()
+    await _clear_publication_preview_message(context)
+    _clear_publication_draft(context)
+    await _safe_query_edit(
+        update,
+        text=(
+            "✅ <b>הפרסום נשלח</b>\n\n"
+            f"📨 נשלח בהצלחה: <b>{result.get('sent', 0)}</b>\n"
+            f"❌ נכשלו: <b>{result.get('failed', 0)}</b>\n"
+            f"🎯 יעד כולל: <b>{result.get('total', 0)}</b>\n"
+            f"⏱️ משך שליחה: <b>{elapsed:.2f} שניות</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _AWAIT_PUB_SCHEDULE
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text=(
+            "⏱️ <b>תזמון / טיימר</b>\n\n"
+            "בחר מהיר:\n"
+            "• בעוד 10 דקות\n"
+            "• בעוד שעתיים\n"
+            "• בעוד יום\n\n"
+            "או שלח תאריך ושעה בפורמט: YYYY-MM-DD HH:MM"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("+10 דקות", callback_data="SUBS_PUB_DELAY_10m")],
+            [InlineKeyboardButton("+2 שעות", callback_data="SUBS_PUB_DELAY_2h")],
+            [InlineKeyboardButton("+1 יום", callback_data="SUBS_PUB_DELAY_1d")],
+            [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+            [InlineKeyboardButton("🔁 כל שעתיים", callback_data="SUBS_PUB_RECUR_120")],
+            [InlineKeyboardButton("🔁 כל 6 שעות", callback_data="SUBS_PUB_RECUR_360")],
+            [InlineKeyboardButton("🔁 פעם ביום", callback_data="SUBS_PUB_RECUR_1440")],
+            [InlineKeyboardButton("🔁 פעם בשבוע", callback_data="SUBS_PUB_RECUR_10080")],
+            [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _set_publication_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    suffix = data[len("SUBS_PUB_DELAY_"):]
+    now = datetime.utcnow()
+    if suffix.endswith("m"):
+        dt = now + timedelta(minutes=int(suffix[:-1]))
+    elif suffix.endswith("h"):
+        dt = now + timedelta(hours=int(suffix[:-1]))
+    elif suffix.endswith("d"):
+        dt = now + timedelta(days=int(suffix[:-1]))
+    else:
+        await update.callback_query.answer("טיימר לא תקין", show_alert=True)
+        return
+    await _save_scheduled_publication(update, context, dt)
+
+
+async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    minutes = _parse_positive_int(data[len("SUBS_PUB_RECUR_"):])
+    if minutes is None:
+        await update.callback_query.answer("מחזור לא תקין", show_alert=True)
+        return
+    if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני הפעלה.", show_alert=True)
+        return
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    if not (draft.get("content_text") or draft.get("file_id")):
+        await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
+        return
+
+    payload = _build_send_payload_from_draft(draft)
+    next_run_at = (datetime.utcnow() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    pub_id = create_publication_record(
+        title=payload["title"],
+        content_text=payload["content_text"],
+        media_type=payload["media_type"],
+        file_id=payload["file_id"],
+        target_type=payload["target_type"],
+        target_value=payload["target_value"],
+        status="active",
+        created_by=update.callback_query.from_user.id,
+        is_recurring=1,
+        repeat_every_minutes=minutes,
+        next_run_at=next_run_at,
+        buttons=payload["buttons"],
+    )
+    if pub_id <= 0:
+        await update.callback_query.answer("שגיאה ביצירת פרסום מחזורי", show_alert=True)
+        return
+    await _schedule_recurring_job(context, pub_id, minutes)
+    await _clear_publication_preview_message(context)
+    _clear_publication_draft(context)
+    await _safe_query_edit(
+        update,
+        text=f"✅ פרסום מחזורי הופעל.\nתדירות: כל {minutes} דקות.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _save_scheduled_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, run_dt: datetime) -> None:
+    if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני תזמון.", show_alert=True)
+        return
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    if not (draft.get("content_text") or draft.get("file_id")):
+        await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
+        return
+    payload = _build_send_payload_from_draft(draft)
+    run_at = run_dt.strftime("%Y-%m-%d %H:%M:%S")
+    pub_id = create_publication_record(
+        title=payload["title"],
+        content_text=payload["content_text"],
+        media_type=payload["media_type"],
+        file_id=payload["file_id"],
+        target_type=payload["target_type"],
+        target_value=payload["target_value"],
+        status="scheduled",
+        created_by=update.callback_query.from_user.id,
+        scheduled_at=run_at,
+        next_run_at=run_at,
+        buttons=payload["buttons"],
+    )
+    if pub_id <= 0:
+        await update.callback_query.answer("שגיאה בשמירת תזמון", show_alert=True)
+        return
+    await _schedule_one_time_job(context, pub_id, run_dt)
+    await _clear_publication_preview_message(context)
+    _clear_publication_draft(context)
+    await _safe_query_edit(
+        update,
+        text=f"✅ הפרסום תוזמן ל- <b>{run_at}</b>",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1) -> None:
+    term = (context.user_data.get(_PUB_SEARCH_TERM) or "").strip()
+    per_page = 8
+    rows_data, total = list_publications_paged(page=page, per_page=per_page, search=term)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    if page != 1 and (not rows_data):
+        rows_data, total = list_publications_paged(page=1, per_page=per_page, search=term)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = 1
+
+    rows = []
+    for p in rows_data:
+        status = _publication_status_label(str(p.get("status") or ""))
+        title = (p.get("title") or "פרסום").strip()
+        rows.append([InlineKeyboardButton(f"#{p['id']} · {status} · {title[:20]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"SUBS_PUB_LIST_PAGE_{page - 1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("הבא ➡️", callback_data=f"SUBS_PUB_LIST_PAGE_{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("🔍 חיפוש", callback_data="SUBS_PUB_SEARCH")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")])
+
+    await _safe_query_edit(
+        update,
+        text=f"📚 <b>רשימת פרסומים</b>\nעמוד {page}/{total_pages} • סה״כ {total}",
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _show_publication_details(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    p = get_publication(publication_id)
+    if not p:
+        await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
+        return
+    status = str(p.get("status") or "")
+    text = (
+        f"📄 <b>פרסום #{publication_id}</b>\n\n"
+        f"מצב: <b>{_publication_status_label(status)}</b>\n"
+        f"יעד: <b>{_publication_target_label(str(p.get('target_type') or 'all'), p.get('target_value'))}</b>\n"
+        f"תזמון: <b>{p.get('scheduled_at') or '-'}</b>\n"
+        f"מחזורי: <b>{'כן' if int(p.get('is_recurring') or 0) == 1 else 'לא'}</b>\n"
+        f"מוצלח: <b>{p.get('sent_success_count') or 0}</b> | נכשל: <b>{p.get('sent_fail_count') or 0}</b>\n"
+        f"יעד כולל: <b>{p.get('total_targets') or 0}</b>"
+    )
+    rows = [[InlineKeyboardButton("🚀 שלח עכשיו", callback_data=f"SUBS_PUB_RUN_{publication_id}")]]
+    if status in {"scheduled", "active"}:
+        rows.append([InlineKeyboardButton("⛔ עצור", callback_data=f"SUBS_PUB_CANCEL_{publication_id}")])
+    if status == "canceled" and int(p.get("is_recurring") or 0) == 1:
+        rows.append([InlineKeyboardButton("▶️ הפעלה מחדש", callback_data=f"SUBS_PUB_RESUME_{publication_id}")])
+    rows.append([InlineKeyboardButton("📈 סטטיסטיקה", callback_data=f"SUBS_PUB_STATS_VIEW_{publication_id}")])
+    rows.append([InlineKeyboardButton("🗑️ מחיקה", callback_data=f"SUBS_PUB_DELETE_{publication_id}")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")])
+    await _safe_query_edit(update, text=text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="HTML")
+
+
+async def _delete_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    await _cancel_publication_jobs(context, publication_id)
+    ok = remove_publication(publication_id)
+    await update.callback_query.answer("נמחק" if ok else "מחיקה נכשלה", show_alert=not ok)
+    await _show_publications_list(update, context, page=1)
+
+
+async def _run_publication_now(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    result = await dispatch_publication(context.bot, publication_id)
+    await update.callback_query.answer("נשלח" if result.get("ok") else "שליחה נכשלה", show_alert=not result.get("ok"))
+    await _show_publication_details(update, context, publication_id)
+
+
+async def _cancel_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    await _cancel_publication_jobs(context, publication_id)
+    update_publication_record(publication_id, status="canceled")
+    await update.callback_query.answer("הפרסום בוטל")
+    await _show_publication_details(update, context, publication_id)
+
+
+async def _resume_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    p = get_publication(publication_id)
+    if not p:
+        await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
+        return
+    if int(p.get("is_recurring") or 0) != 1:
+        await update.callback_query.answer("רק למחזורי ניתן להפעיל מחדש", show_alert=True)
+        return
+    minutes = int(p.get("repeat_every_minutes") or 0)
+    if minutes <= 0:
+        await update.callback_query.answer("תדירות לא תקינה", show_alert=True)
+        return
+    update_publication_record(publication_id, status="active")
+    await _schedule_recurring_job(context, publication_id, minutes)
+    await update.callback_query.answer("הופעל מחדש")
+    await _show_publication_details(update, context, publication_id)
+
+
+async def _prompt_publication_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _AWAIT_PUB_SEARCH
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text="🔍 שלח מילה לחיפוש בפרסומים (כותרת/תוכן). שלח '-' לאיפוס.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_publication_stats_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    rows, total = list_publications_paged(page=1, per_page=8, search="")
+    lines = ["📈 <b>סטטיסטיקות פרסום</b>", f"סה״כ פרסומים: <b>{total}</b>", "", "בחר פרסום:"]
+    kb_rows = []
+    for p in rows:
+        kb_rows.append([InlineKeyboardButton(f"#{p['id']} · {_publication_status_label(str(p.get('status') or ''))}", callback_data=f"SUBS_PUB_STATS_VIEW_{p['id']}")])
+    kb_rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")])
+    await _safe_query_edit(update, text="\n".join(lines), reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode="HTML")
+
+
+async def _show_publication_stats_for_one(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    stats = publication_stats(publication_id)
+    pub = stats.get("publication") or {}
+    events = stats.get("events") or {}
+    text = (
+        f"📈 <b>סטטיסטיקה לפרסום #{publication_id}</b>\n\n"
+        f"יעד: <b>{_publication_target_label(str(pub.get('target_type') or 'all'), pub.get('target_value'))}</b>\n"
+        f"זמן שליחה אחרון: <b>{pub.get('last_sent_at') or '-'}</b>\n"
+        f"נשלחו: <b>{events.get('sent', 0)}</b>\n"
+        f"נכשלו: <b>{events.get('failed', 0)}</b>\n"
+        f"מונה הצלחות: <b>{pub.get('sent_success_count') or 0}</b>\n"
+        f"מונה כישלונות: <b>{pub.get('sent_fail_count') or 0}</b>"
+    )
+    await _safe_query_edit(
+        update,
+        text=text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה לפרסום", callback_data=f"SUBS_PUB_VIEW_{publication_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _bootstrap_publication_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
+    rows, _ = list_publications_paged(page=1, per_page=200)
+    now = datetime.utcnow()
+    for p in rows:
+        pub_id = int(p.get("id") or 0)
+        if pub_id <= 0:
+            continue
+        status = str(p.get("status") or "")
+        if status == "scheduled" and p.get("scheduled_at"):
+            try:
+                run_at = datetime.strptime(str(p.get("scheduled_at")), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            if run_at <= now:
+                await _run_publication_job(context, pub_id)
+            else:
+                await _schedule_one_time_job(context, pub_id, run_at)
+        elif status == "active" and int(p.get("is_recurring") or 0) == 1:
+            minutes = int(p.get("repeat_every_minutes") or 0)
+            if minutes > 0:
+                await _schedule_recurring_job(context, pub_id, minutes)
+
+
+async def _run_publication_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    await dispatch_publication(context.bot, publication_id)
+
+
+async def _schedule_one_time_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, run_at: datetime) -> None:
+    await _cancel_publication_jobs(context, publication_id)
+    if not context.job_queue:
+        return
+    job = context.job_queue.run_once(
+        _publication_job_callback,
+        when=run_at,
+        data={"publication_id": publication_id, "mode": "once"},
+        name=f"pub_once_{publication_id}",
+    )
+    _PUB_SCHEDULE_JOBS[publication_id] = job.name
+
+
+async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, minutes: int) -> None:
+    await _cancel_publication_jobs(context, publication_id)
+    if not context.job_queue:
+        return
+    interval = max(1, minutes) * 60
+    job = context.job_queue.run_repeating(
+        _publication_job_callback,
+        interval=interval,
+        first=5,
+        data={"publication_id": publication_id, "mode": "repeat"},
+        name=f"pub_repeat_{publication_id}",
+    )
+    _PUB_RECURRING_JOBS[publication_id] = job.name
+
+
+async def _cancel_publication_jobs(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    if context.job_queue:
+        for job in context.job_queue.jobs():
+            if job.name in {f"pub_once_{publication_id}", f"pub_repeat_{publication_id}"}:
+                job.schedule_removal()
+    _PUB_SCHEDULE_JOBS.pop(publication_id, None)
+    _PUB_RECURRING_JOBS.pop(publication_id, None)
+
+
+async def _publication_job_callback(job_context) -> None:
+    data = job_context.job.data or {}
+    publication_id = int(data.get("publication_id") or 0)
+    mode = str(data.get("mode") or "")
+    if publication_id <= 0:
+        return
+    publication = get_publication(publication_id)
+    if not publication:
+        return
+
+    status = str(publication.get("status") or "")
+    is_recurring = int(publication.get("is_recurring") or 0) == 1
+
+    if mode == "once" and status != "scheduled":
+        return
+    if mode == "repeat" and (status != "active" or not is_recurring):
+        return
+
+    await dispatch_publication(job_context.bot, publication_id)
 
 
 async def _prompt_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -695,6 +1539,8 @@ def _extract_message_media(message) -> dict | None:
         return {"media_type": "audio", "file_id": message.audio.file_id, "caption": caption}
     if getattr(message, "animation", None):
         return {"media_type": "animation", "file_id": message.animation.file_id, "caption": caption}
+    if getattr(message, "video_note", None):
+        return {"media_type": "video_note", "file_id": message.video_note.file_id, "caption": caption}
     if getattr(message, "sticker", None):
         return {"media_type": "sticker", "file_id": message.sticker.file_id, "caption": caption}
     return None
@@ -708,6 +1554,7 @@ def _media_label(media_type: str) -> str:
         "voice": "🎤 הודעה קולית",
         "audio": "🎵 אודיו",
         "animation": "🎞️ אנימציה",
+        "video_note": "🔵 וידאו עגול",
         "sticker": "😊 סטיקר",
     }
     return labels.get(media_type, "🗂️ מדיה")
@@ -754,6 +1601,8 @@ async def _send_media_message(
         return await context.bot.send_audio(audio=file_id, caption=caption or None, **kwargs)
     if media_type == "animation":
         return await context.bot.send_animation(animation=file_id, caption=caption or None, **kwargs)
+    if media_type == "video_note":
+        return await context.bot.send_video_note(video_note=file_id, **kwargs)
     if media_type == "sticker":
         return await context.bot.send_sticker(sticker=file_id, **kwargs)
     return None
@@ -1340,6 +2189,234 @@ async def handle_subscriptions_input(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     state = context.user_data.get(_STATE)
+
+    if state == _AWAIT_PUB_CONTENT:
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        text = (update.message.text or "").strip() if update.message else ""
+        media = _extract_message_media(update.message)
+        if not text and not media:
+            await update.message.reply_text("שלח טקסט ו/או מדיה לפרסום.")
+            return
+
+        draft["content_text"] = text
+        if media:
+            draft["media_type"] = media.get("media_type")
+            draft["file_id"] = media.get("file_id")
+        else:
+            draft["media_type"] = None
+            draft["file_id"] = None
+        context.user_data[_PUB_DRAFT] = draft
+        context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+        context.user_data.pop(_STATE, None)
+
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        if chat_id and msg_id:
+            edited = await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=_draft_preview_text(draft),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                    [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+                    [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+                    [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+                    [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+                    [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+                    [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+                    [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+                ]),
+                parse_mode="HTML",
+            )
+            if edited:
+                try:
+                    await update.message.delete()
+                except Exception:
+                    pass
+                return
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=_draft_preview_text(draft),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+                [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+                [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+                [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+                [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+                [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
+    if state == _AWAIT_PUB_TARGET_VALUE:
+        value = (update.message.text or "").strip()
+        if not value:
+            return
+        kind = context.user_data.get("subs_pub_target_kind")
+        if kind not in {"catalog", "permission"}:
+            context.user_data.pop(_STATE, None)
+            return
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        draft["target_type"] = kind
+        draft["target_value"] = value
+        context.user_data[_PUB_DRAFT] = draft
+        context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+        context.user_data.pop(_STATE, None)
+        context.user_data.pop("subs_pub_target_kind", None)
+
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        if chat_id and msg_id:
+            await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=_draft_preview_text(draft),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                    [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+                    [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+                    [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+                    [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+                    [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+                    [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+                    [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+                ]),
+                parse_mode="HTML",
+            )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
+    if state == _AWAIT_PUB_BUTTONS:
+        raw = (update.message.text or "").strip()
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        if raw == "-":
+            draft["buttons"] = []
+        else:
+            parsed: list[dict] = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or "|" not in line:
+                    continue
+                title, url = [x.strip() for x in line.split("|", 1)]
+                if not title or not url.startswith(("http://", "https://", "tg://")):
+                    continue
+                parsed.append({"title": title[:50], "url": url[:300]})
+            draft["buttons"] = parsed
+        context.user_data[_PUB_DRAFT] = draft
+        context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+        context.user_data.pop(_STATE, None)
+
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        if chat_id and msg_id:
+            await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=_draft_preview_text(draft),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                    [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+                    [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+                    [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+                    [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+                    [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+                    [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+                    [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+                ]),
+                parse_mode="HTML",
+            )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
+    if state == _AWAIT_PUB_SCHEDULE:
+        if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+            await update.message.reply_text("יש לפתוח תצוגה מקדימה לפני תזמון.")
+            return
+        raw = (update.message.text or "").strip()
+        try:
+            run_dt = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+        except Exception:
+            await update.message.reply_text("פורמט לא תקין. השתמש: YYYY-MM-DD HH:MM")
+            return
+
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        payload = _build_send_payload_from_draft(draft)
+        pub_id = create_publication_record(
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="scheduled",
+            created_by=update.effective_user.id if update.effective_user else None,
+            scheduled_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            next_run_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            buttons=payload["buttons"],
+        )
+        if pub_id > 0:
+            await _schedule_one_time_job(context, pub_id, run_dt)
+        context.user_data.pop(_STATE, None)
+        await _clear_publication_preview_message(context)
+        _clear_publication_draft(context)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=(
+                "✅ הפרסום תוזמן בהצלחה\n"
+                f"🕒 {run_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+        )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
+    if state == _AWAIT_PUB_SEARCH:
+        term = (update.message.text or "").strip()
+        context.user_data[_PUB_SEARCH_TERM] = "" if term == "-" else term
+        context.user_data.pop(_STATE, None)
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        rows_data, total = list_publications_paged(page=1, per_page=8, search=context.user_data[_PUB_SEARCH_TERM])
+        total_pages = max(1, (total + 7) // 8)
+        rows = []
+        for p in rows_data:
+            rows.append([InlineKeyboardButton(f"#{p['id']} · {_publication_status_label(str(p.get('status') or ''))}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+        if total_pages > 1:
+            rows.append([InlineKeyboardButton("הבא ➡️", callback_data="SUBS_PUB_LIST_PAGE_2")])
+        rows.append([InlineKeyboardButton("🔍 חיפוש", callback_data="SUBS_PUB_SEARCH")])
+        rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")])
+        if chat_id and msg_id:
+            await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=f"📚 <b>רשימת פרסומים</b>\nעמוד 1/{total_pages} • סה״כ {total}",
+                reply_markup=InlineKeyboardMarkup(rows),
+                parse_mode="HTML",
+            )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
 
     if state == _AWAIT_SEARCH:
         term = (update.message.text or "").strip()
