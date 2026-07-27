@@ -838,15 +838,7 @@ async def _save_publication_edit(update: Update, context: ContextTypes.DEFAULT_T
     replace_publication_buttons_record(pub_id, draft.get("buttons") or [])
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
-    await _safe_query_edit(
-        update,
-        text=f"✅ השינויים נשמרו בפרסום #{pub_id}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
-            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")],
-        ]),
-        parse_mode="HTML",
-    )
+    await _show_publication_details(update, context, pub_id)
 
 
 async def _handle_publication_auto_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
@@ -1067,21 +1059,13 @@ async def _send_publication_now(update: Update, context: ContextTypes.DEFAULT_TY
     elapsed = (datetime.utcnow() - started).total_seconds()
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
-    await _safe_query_edit(
-        update,
-        text=(
-            "✅ <b>הפרסום נשלח</b>\n\n"
-            f"📨 נשלח בהצלחה: <b>{result.get('sent', 0)}</b>\n"
-            f"❌ נכשלו: <b>{result.get('failed', 0)}</b>\n"
-            f"🎯 יעד כולל: <b>{result.get('total', 0)}</b>\n"
-            f"⏱️ משך שליחה: <b>{elapsed:.2f} שניות</b>"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
-            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
-        ]),
-        parse_mode="HTML",
-    )
+    try:
+        await update.callback_query.answer(
+            f"נשלחו: {result.get('sent', 0)} | נכשלו: {result.get('failed', 0)} | {elapsed:.2f}s"
+        )
+    except Exception:
+        pass
+    await _show_publication_details(update, context, pub_id)
 
 
 async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1472,15 +1456,7 @@ async def _save_scheduled_publication(update: Update, context: ContextTypes.DEFA
     context.user_data.pop(_STATE, None)
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
-    await _safe_query_edit(
-        update,
-        text=f"✅ הפרסום תוזמן ל- <b>{run_at}</b>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
-            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
-        ]),
-        parse_mode="HTML",
-    )
+    await _show_publication_details(update, context, pub_id)
 
 
 async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1) -> None:
@@ -1496,17 +1472,29 @@ async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_
 
     rows = []
     lines = [f"📚 <b>רשימת פרסומים</b>", f"עמוד {page}/{total_pages} • סה״כ {total}", ""]
-    for p in rows_data:
+    for idx, p in enumerate(rows_data, start=1):
         status = _publication_status_label(str(p.get("status") or ""))
-        title = (p.get("title") or "פרסום ללא כותרת").strip()
+        raw_title = str(p.get("title") or "").strip()
+        title = raw_title or "פרסום ללא כותרת"
+        content_text = (p.get("content_text") or "").strip()
+        content_preview = " ".join(content_text.split())[:52]
+        media_type = str(p.get("media_type") or "").strip()
+        media_fallback = f"פרסום מדיה ({media_type})" if media_type else "פרסום ללא כותרת"
+        list_index = ((page - 1) * per_page) + idx
+        normalized_title = "" if raw_title in {"פרסום", "פרסום ללא כותרת"} else raw_title
         target = _publication_target_label(str(p.get("target_type") or "all"), p.get("target_value"))
         next_run = _fmt_iso(str(p.get("next_run_at") or ""))
         last_sent = _fmt_iso(str(p.get("last_sent_at") or ""))
+        identity = normalized_title or content_preview or media_fallback
         lines.append(
-            f"#{p['id']} | <b>{title[:44]}</b> | {status}\n"
-            f"יעד: {target} | הבא: {next_run} | אחרון: {last_sent}"
+            f"{list_index}. <b>{identity[:52]}</b> | {status}\n"
+            f"יעד: {target} | שליחה הבאה: {next_run} | שליחה אחרונה: {last_sent}"
         )
-        rows.append([InlineKeyboardButton(f"📄 פתח #{p['id']} · {title[:24]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+        button_title = normalized_title or content_preview or media_fallback
+        rows.append([InlineKeyboardButton(f"📄 פרסום {list_index} · {button_title[:24]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+
+    if not rows_data:
+        lines.append("אין פרסומים להצגה.")
 
     nav = []
     if page > 1:
