@@ -99,6 +99,21 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         origin, page, subscriber_id = payload
         return await _show_subscriber_card(update, context, subscriber_id, page, origin)
 
+    if data.startswith("SUBS_OPEN_TG_PRIVATE_"):
+        payload = _parse_card_payload(data, "SUBS_OPEN_TG_PRIVATE_")
+        if payload is None:
+            return await _invalid_callback(update)
+        _origin, _page, subscriber_id = payload
+        s = get_subscriber_card(subscriber_id)
+        if not s or not s.get("username"):
+            await update.callback_query.answer(
+                "למשתמש זה אין Username ציבורי בטלגרם.",
+                show_alert=True,
+            )
+            return
+        await update.callback_query.answer()
+        return
+
     if data.startswith("SUBS_REFRESH_"):
         payload = _parse_card_payload(data, "SUBS_REFRESH_")
         if payload is None:
@@ -317,6 +332,19 @@ async def _show_subscriber_card(
 
     back_cb = f"SUBS_LIST_PAGE_{page}" if origin == "L" else f"SUBS_SEARCH_PAGE_{page}"
 
+    username = (s.get("username") or "").strip().lstrip("@")
+    if username:
+        private_chat_button = [
+            InlineKeyboardButton("✉️ פתח שיחה פרטית", url=f"https://t.me/{username}")
+        ]
+    else:
+        private_chat_button = [
+            InlineKeyboardButton(
+                "✉️ פתח שיחה פרטית",
+                callback_data=f"SUBS_OPEN_TG_PRIVATE_{origin}_{page}_{subscriber_id}",
+            )
+        ]
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_REFRESH_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("💬 שיחה פרטית", callback_data=f"SUBS_CHAT_{origin}_{page}_{subscriber_id}")],
@@ -324,6 +352,7 @@ async def _show_subscriber_card(
         [InlineKeyboardButton("📊 סטטיסטיקה אישית", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⛔ השעיית מנוי", callback_data=f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⬅️ חזרה", callback_data=back_cb)],
+        private_chat_button,
     ])
 
     await _safe_query_edit(update, text=text, reply_markup=kb, parse_mode="HTML")
