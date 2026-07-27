@@ -311,7 +311,7 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         return await _prompt_publication_search(update, context)
 
     if data == "SUBS_PUB_AUTO_DELETE":
-        return await update.callback_query.answer("ℹ️ מחיקה אוטומטית תבוצע לפי auto_delete_at כאשר יוגדר.", show_alert=True)
+        return await _show_coming_soon(update, "🧹 מחיקה אוטומטית", "SUBS_PUB_MENU")
 
     if data == "SUBS_PUB_STATS":
         return await _show_publication_stats_menu(update, context)
@@ -468,6 +468,8 @@ async def _show_publications_menu(update: Update) -> None:
         text="📣 <b>פרסום למנויים</b>\n\nבחר פעולה:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
+            [InlineKeyboardButton("⏱️ תזמון", callback_data="SUBS_PUB_SCHEDULE")],
+            [InlineKeyboardButton("🧹 מחיקה אוטומטית (לא ממומש)", callback_data="SUBS_PUB_AUTO_DELETE")],
             [InlineKeyboardButton("📚 רשימת פרסומים", callback_data="SUBS_PUB_LIST")],
             [InlineKeyboardButton("📈 סטטיסטיקת פרסום", callback_data="SUBS_PUB_STATS")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_MAIN")],
@@ -877,6 +879,38 @@ async def _send_publication_now(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    has_content = bool((draft.get("content_text") or "").strip() or draft.get("file_id"))
+    if not has_content:
+        await _safe_query_edit(
+            update,
+            text=(
+                "⏱️ <b>תזמון פרסום</b>\n\n"
+                "לפני תזמון צריך ליצור פרסום עם תוכן."
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
+    if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+        await _safe_query_edit(
+            update,
+            text=(
+                "⏱️ <b>תזמון פרסום</b>\n\n"
+                "לפני תזמון יש לפתוח תצוגה מקדימה פעם אחת כדי לאשר את הטיוטה."
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
     context.user_data[_STATE] = _AWAIT_PUB_SCHEDULE
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
     context.user_data[_MSG_ID] = update.callback_query.message.message_id
@@ -897,8 +931,8 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
             [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
             [InlineKeyboardButton("🔁 כל שעתיים", callback_data="SUBS_PUB_RECUR_120")],
             [InlineKeyboardButton("🔁 כל 6 שעות", callback_data="SUBS_PUB_RECUR_360")],
-            [InlineKeyboardButton("🔁 פעם ביום", callback_data="SUBS_PUB_RECUR_1440")],
-            [InlineKeyboardButton("🔁 פעם בשבוע", callback_data="SUBS_PUB_RECUR_10080")],
+            [InlineKeyboardButton("🔁 כל יום", callback_data="SUBS_PUB_RECUR_1440")],
+            [InlineKeyboardButton("🔁 כל שבוע", callback_data="SUBS_PUB_RECUR_10080")],
             [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
         ]),
         parse_mode="HTML",
@@ -908,29 +942,79 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
 async def _set_publication_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     suffix = data[len("SUBS_PUB_DELAY_"):]
     now = datetime.utcnow()
-    if suffix.endswith("m"):
-        dt = now + timedelta(minutes=int(suffix[:-1]))
-    elif suffix.endswith("h"):
-        dt = now + timedelta(hours=int(suffix[:-1]))
-    elif suffix.endswith("d"):
-        dt = now + timedelta(days=int(suffix[:-1]))
-    else:
-        await update.callback_query.answer("טיימר לא תקין", show_alert=True)
+    try:
+        amount = int(suffix[:-1])
+    except (TypeError, ValueError):
+        amount = 0
+
+    if amount <= 0:
+        await _safe_query_edit(
+            update,
+            text="⚠️ טיימר לא תקין. נסה שוב.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
         return
+
+    if suffix.endswith("m"):
+        dt = now + timedelta(minutes=amount)
+    elif suffix.endswith("h"):
+        dt = now + timedelta(hours=amount)
+    elif suffix.endswith("d"):
+        dt = now + timedelta(days=amount)
+    else:
+        await _safe_query_edit(
+            update,
+            text="⚠️ טיימר לא תקין. נסה שוב.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
     await _save_scheduled_publication(update, context, dt)
 
 
 async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     minutes = _parse_positive_int(data[len("SUBS_PUB_RECUR_"):])
     if minutes is None:
-        await update.callback_query.answer("מחזור לא תקין", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ מחזור לא תקין. נסה שוב.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
-        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני הפעלה.", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ יש לפתוח תצוגה מקדימה לפני הפעלה מחזורית.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     draft = context.user_data.get(_PUB_DRAFT) or {}
     if not (draft.get("content_text") or draft.get("file_id")):
-        await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ אין תוכן לפרסום.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
         return
 
     payload = _build_send_payload_from_draft(draft)
@@ -950,9 +1034,18 @@ async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAU
         buttons=payload["buttons"],
     )
     if pub_id <= 0:
-        await update.callback_query.answer("שגיאה ביצירת פרסום מחזורי", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ שגיאה ביצירת פרסום מחזורי.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     await _schedule_recurring_job(context, pub_id, minutes)
+    context.user_data.pop(_STATE, None)
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
     await _safe_query_edit(
@@ -968,11 +1061,27 @@ async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAU
 
 async def _save_scheduled_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, run_dt: datetime) -> None:
     if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
-        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני תזמון.", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ יש לפתוח תצוגה מקדימה לפני תזמון.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     draft = context.user_data.get(_PUB_DRAFT) or {}
     if not (draft.get("content_text") or draft.get("file_id")):
-        await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ אין תוכן לפרסום.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     payload = _build_send_payload_from_draft(draft)
     run_at = run_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -990,9 +1099,18 @@ async def _save_scheduled_publication(update: Update, context: ContextTypes.DEFA
         buttons=payload["buttons"],
     )
     if pub_id <= 0:
-        await update.callback_query.answer("שגיאה בשמירת תזמון", show_alert=True)
+        await _safe_query_edit(
+            update,
+            text="⚠️ שגיאה בשמירת תזמון.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
         return
     await _schedule_one_time_job(context, pub_id, run_dt)
+    context.user_data.pop(_STATE, None)
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
     await _safe_query_edit(
@@ -2170,7 +2288,10 @@ async def _open_chat_from_notification(update: Update, data: str) -> None:
 async def _show_coming_soon(update: Update, title: str, back_cb: str) -> None:
     await _safe_query_edit(
         update,
-        text=f"{title}\n\nבקרוב",
+        text=(
+            f"{title}\n\n"
+            "⚠️ אפשרות זו עדיין לא ממומשת במודול הפרסום."
+        ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ חזרה", callback_data=back_cb)],
         ]),
@@ -2366,6 +2487,9 @@ async def handle_subscriptions_input(
             next_run_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
             buttons=payload["buttons"],
         )
+        if pub_id <= 0:
+            await update.message.reply_text("⚠️ שגיאה בשמירת תזמון. נסה שוב.")
+            return
         if pub_id > 0:
             await _schedule_one_time_job(context, pub_id, run_dt)
         context.user_data.pop(_STATE, None)
