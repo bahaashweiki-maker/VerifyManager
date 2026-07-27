@@ -92,15 +92,38 @@ def init_subscriptions_db() -> None:
                 scheduled_at    TEXT,
                 is_recurring    INTEGER NOT NULL DEFAULT 0,
                 repeat_every_minutes INTEGER,
+                recurrence_type TEXT,
+                recurrence_weekdays TEXT,
+                recurrence_day_of_month INTEGER,
+                recurrence_time TEXT,
                 next_run_at     TEXT,
                 last_sent_at    TEXT,
                 sent_success_count INTEGER NOT NULL DEFAULT 0,
                 sent_fail_count INTEGER NOT NULL DEFAULT 0,
                 total_targets   INTEGER NOT NULL DEFAULT 0,
                 auto_delete_at  TEXT,
+                auto_delete_minutes INTEGER,
                 created_by      INTEGER,
                 created_at      TEXT DEFAULT (datetime('now')),
                 updated_at      TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_publication_deliveries (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                publication_id  INTEGER NOT NULL,
+                subscriber_id   INTEGER,
+                telegram_id     INTEGER NOT NULL,
+                message_id      INTEGER NOT NULL,
+                delete_at       TEXT,
+                deleted_at      TEXT,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(publication_id) REFERENCES subscriber_publications(id),
+                FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
             )
             """
         )
@@ -172,11 +195,16 @@ def init_subscriptions_db() -> None:
     _migrate_add_column("subscriber_publications", "target_value", "TEXT")
     _migrate_add_column("subscriber_publications", "is_recurring", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column("subscriber_publications", "repeat_every_minutes", "INTEGER")
+    _migrate_add_column("subscriber_publications", "recurrence_type", "TEXT")
+    _migrate_add_column("subscriber_publications", "recurrence_weekdays", "TEXT")
+    _migrate_add_column("subscriber_publications", "recurrence_day_of_month", "INTEGER")
+    _migrate_add_column("subscriber_publications", "recurrence_time", "TEXT")
     _migrate_add_column("subscriber_publications", "next_run_at", "TEXT")
     _migrate_add_column("subscriber_publications", "last_sent_at", "TEXT")
     _migrate_add_column("subscriber_publications", "sent_success_count", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column("subscriber_publications", "sent_fail_count", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column("subscriber_publications", "total_targets", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column("subscriber_publications", "auto_delete_minutes", "INTEGER")
     _migrate_add_column("subscriber_publications", "updated_at", "TEXT DEFAULT (datetime('now'))")
 
     logger.info("subscriptions_db initialized")

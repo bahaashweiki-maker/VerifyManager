@@ -48,7 +48,12 @@ def create_publication(
     scheduled_at: str | None = None,
     is_recurring: int = 0,
     repeat_every_minutes: int | None = None,
+    recurrence_type: str | None = None,
+    recurrence_weekdays: str | None = None,
+    recurrence_day_of_month: int | None = None,
+    recurrence_time: str | None = None,
     next_run_at: str | None = None,
+    auto_delete_minutes: int | None = None,
 ) -> int:
     with get_connection() as conn:
         cur = conn.execute(
@@ -65,10 +70,15 @@ def create_publication(
                 created_by,
                 is_recurring,
                 repeat_every_minutes,
+                recurrence_type,
+                recurrence_weekdays,
+                recurrence_day_of_month,
+                recurrence_time,
                 next_run_at,
+                auto_delete_minutes,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 title,
@@ -82,7 +92,12 @@ def create_publication(
                 created_by,
                 is_recurring,
                 repeat_every_minutes,
+                recurrence_type,
+                recurrence_weekdays,
+                recurrence_day_of_month,
+                recurrence_time,
                 next_run_at,
+                auto_delete_minutes,
             ),
         )
         conn.commit()
@@ -105,11 +120,16 @@ def update_publication(publication_id: int, **fields) -> bool:
         "auto_delete_at",
         "is_recurring",
         "repeat_every_minutes",
+        "recurrence_type",
+        "recurrence_weekdays",
+        "recurrence_day_of_month",
+        "recurrence_time",
         "next_run_at",
         "last_sent_at",
         "sent_success_count",
         "sent_fail_count",
         "total_targets",
+        "auto_delete_minutes",
     }
     clean_items = [(k, v) for k, v in fields.items() if k in allowed]
     if not clean_items:
@@ -129,6 +149,10 @@ def update_publication(publication_id: int, **fields) -> bool:
 
 def delete_publication(publication_id: int) -> bool:
     with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM subscriber_publication_deliveries WHERE publication_id = ?",
+            (publication_id,),
+        )
         conn.execute(
             "DELETE FROM subscriber_publication_buttons WHERE publication_id = ?",
             (publication_id,),
@@ -324,6 +348,119 @@ def get_publication_buttons(publication_id: int) -> list:
             (publication_id,),
         )
         return cur.fetchall()
+
+
+def create_publication_delivery(
+    *,
+    publication_id: int,
+    subscriber_id: int | None,
+    telegram_id: int,
+    message_id: int,
+    delete_at: str | None,
+) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO subscriber_publication_deliveries (
+                publication_id,
+                subscriber_id,
+                telegram_id,
+                message_id,
+                delete_at,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending')
+            """,
+            (publication_id, subscriber_id, telegram_id, message_id, delete_at),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_pending_publication_deliveries(publication_id: int) -> list:
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+        cur = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_publication_deliveries
+            WHERE publication_id = ?
+              AND status = 'pending'
+            ORDER BY id ASC
+            """,
+            (publication_id,),
+        )
+        return cur.fetchall()
+
+
+def list_due_publication_deletions(now_iso: str) -> list:
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+        cur = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_publication_deliveries
+            WHERE status = 'pending'
+              AND delete_at IS NOT NULL
+              AND delete_at <= ?
+            ORDER BY delete_at ASC, id ASC
+            """,
+            (now_iso,),
+        )
+        return cur.fetchall()
+
+
+def list_pending_publication_deletions() -> list:
+        with get_connection() as conn:
+                conn.row_factory = _row_factory
+                cur = conn.execute(
+                        """
+                        SELECT *
+                        FROM subscriber_publication_deliveries
+                        WHERE status = 'pending'
+                            AND delete_at IS NOT NULL
+                        ORDER BY delete_at ASC, id ASC
+                        """
+                )
+                return cur.fetchall()
+
+
+def get_publication_delivery_by_id(delivery_id: int) -> Optional[dict]:
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+        cur = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_publication_deliveries
+            WHERE id = ?
+            """,
+            (delivery_id,),
+        )
+        return cur.fetchone()
+
+
+def mark_publication_delivery_status(delivery_id: int, status: str) -> bool:
+    with get_connection() as conn:
+        if status == "deleted":
+            cur = conn.execute(
+                """
+                UPDATE subscriber_publication_deliveries
+                SET status = ?, deleted_at = datetime('now')
+                WHERE id = ?
+                """,
+                (status, delivery_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE subscriber_publication_deliveries
+                SET status = ?
+                WHERE id = ?
+                """,
+                (status, delivery_id),
+            )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def _row_factory(cursor, row):

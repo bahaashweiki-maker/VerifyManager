@@ -7,6 +7,8 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from database.database import get_connection
 from repositories.subscriber_publications_repository import (
+        get_publication_delivery_by_id,
+    create_publication_delivery,
     count_publications,
     create_publication,
     delete_publication,
@@ -15,7 +17,11 @@ from repositories.subscriber_publications_repository import (
     get_publication_buttons,
     get_publication_stats_summary,
     increment_publication_delivery,
+    list_due_publication_deletions,
+    list_pending_publication_deletions,
+    list_pending_publication_deliveries,
     list_publications_page,
+    mark_publication_delivery_status,
     record_publication_stat,
     replace_publication_buttons,
     update_publication,
@@ -45,7 +51,12 @@ def create_publication_record(
     scheduled_at: str | None = None,
     is_recurring: int = 0,
     repeat_every_minutes: int | None = None,
+    recurrence_type: str | None = None,
+    recurrence_weekdays: str | None = None,
+    recurrence_day_of_month: int | None = None,
+    recurrence_time: str | None = None,
     next_run_at: str | None = None,
+    auto_delete_minutes: int | None = None,
     buttons: list[dict] | None = None,
 ) -> int:
     pub_id = create_publication(
@@ -60,7 +71,12 @@ def create_publication_record(
         scheduled_at=scheduled_at,
         is_recurring=is_recurring,
         repeat_every_minutes=repeat_every_minutes,
+        recurrence_type=recurrence_type,
+        recurrence_weekdays=recurrence_weekdays,
+        recurrence_day_of_month=recurrence_day_of_month,
+        recurrence_time=recurrence_time,
         next_run_at=next_run_at,
+        auto_delete_minutes=auto_delete_minutes,
     )
     if pub_id > 0 and buttons is not None:
         replace_publication_buttons(pub_id, buttons)
@@ -83,8 +99,158 @@ def list_publication_buttons(publication_id: int) -> list:
     return get_publication_buttons(publication_id)
 
 
+def replace_publication_buttons_record(publication_id: int, buttons: list[dict]) -> None:
+    replace_publication_buttons(publication_id, buttons)
+
+
 def publication_stats(publication_id: int) -> dict:
     return get_publication_stats_summary(publication_id)
+
+
+def create_publication_delivery_record(
+    *,
+    publication_id: int,
+    subscriber_id: int | None,
+    telegram_id: int,
+    message_id: int,
+    delete_at: str | None,
+) -> int:
+    return create_publication_delivery(
+        publication_id=publication_id,
+        subscriber_id=subscriber_id,
+        telegram_id=telegram_id,
+        message_id=message_id,
+        delete_at=delete_at,
+    )
+
+
+def list_pending_delivery_records(publication_id: int) -> list:
+    return list_pending_publication_deliveries(publication_id)
+
+
+def list_due_deletion_records(now_iso: str) -> list:
+    return list_due_publication_deletions(now_iso)
+
+
+def list_pending_deletion_records() -> list:
+    return list_pending_publication_deletions()
+
+
+def mark_delivery_status(delivery_id: int, status: str) -> bool:
+    return mark_publication_delivery_status(delivery_id, status)
+
+
+def get_delivery_record(delivery_id: int) -> Optional[dict]:
+    return get_publication_delivery_by_id(delivery_id)
+
+
+def _parse_time_hhmm(raw: str | None) -> tuple[int, int] | None:
+    text = (raw or "").strip()
+    if not text or ":" not in text:
+        return None
+    parts = text.split(":", 1)
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except Exception:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _next_monthly(after_dt: datetime, day_of_month: int, hour: int, minute: int) -> datetime:
+    year = after_dt.year
+    month = after_dt.month
+    for _ in range(24):
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        for day in range(31, 27, -1):
+            try:
+                _ = datetime(year, month, day, hour, minute)
+                max_day = day
+                break
+            except Exception:
+                continue
+        chosen_day = min(max(1, day_of_month), max_day)
+        candidate = datetime(year, month, chosen_day, hour, minute)
+        if candidate > after_dt:
+            return candidate
+    return after_dt + timedelta(days=30)
+
+
+def compute_next_run(publication: dict, from_time: datetime | None = None) -> str | None:
+    now = from_time or datetime.utcnow()
+    recurrence_type = str(publication.get("recurrence_type") or "").strip().lower()
+    interval = int(publication.get("repeat_every_minutes") or 0)
+
+    base_anchor = now
+    raw_anchor = str(publication.get("next_run_at") or "").strip()
+    if raw_anchor:
+        try:
+            base_anchor = datetime.strptime(raw_anchor, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            base_anchor = now
+
+    if recurrence_type in {"", "interval"}:
+        if interval <= 0:
+            return None
+        candidate = base_anchor + timedelta(minutes=interval)
+        while candidate <= now:
+            candidate += timedelta(minutes=interval)
+        return candidate.strftime("%Y-%m-%d %H:%M:%S")
+
+    if recurrence_type == "daily":
+        hhmm = _parse_time_hhmm(publication.get("recurrence_time"))
+        if not hhmm:
+            return None
+        hour, minute = hhmm
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate.strftime("%Y-%m-%d %H:%M:%S")
+
+    if recurrence_type == "weekly":
+        hhmm = _parse_time_hhmm(publication.get("recurrence_time"))
+        if not hhmm:
+            return None
+        hour, minute = hhmm
+        raw_days = str(publication.get("recurrence_weekdays") or "").strip()
+        days = []
+        for token in raw_days.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                day = int(token)
+            except Exception:
+                continue
+            if 0 <= day <= 6:
+                days.append(day)
+        if not days:
+            days = [now.weekday()]
+
+        candidates = []
+        for d in sorted(set(days)):
+            delta = (d - now.weekday()) % 7
+            dt = (now + timedelta(days=delta)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if dt <= now:
+                dt += timedelta(days=7)
+            candidates.append(dt)
+        return min(candidates).strftime("%Y-%m-%d %H:%M:%S") if candidates else None
+
+    if recurrence_type == "monthly":
+        hhmm = _parse_time_hhmm(publication.get("recurrence_time"))
+        if not hhmm:
+            return None
+        day_of_month = int(publication.get("recurrence_day_of_month") or 1)
+        hour, minute = hhmm
+        candidate = _next_monthly(now, day_of_month, hour, minute)
+        return candidate.strftime("%Y-%m-%d %H:%M:%S")
+
+    return None
 
 
 def count_publication_recipients(target_type: str, target_value: str | None) -> int:
@@ -179,36 +345,46 @@ async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
 
     sent = 0
     failed = 0
+    deliveries: list[dict] = []
     for subscriber_id, tg_id in recipients:
         try:
+            sent_message = None
             if media_type and file_id:
                 if media_type == "photo":
-                    await bot.send_photo(chat_id=tg_id, photo=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_photo(chat_id=tg_id, photo=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "video":
-                    await bot.send_video(chat_id=tg_id, video=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_video(chat_id=tg_id, video=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "animation":
-                    await bot.send_animation(chat_id=tg_id, animation=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_animation(chat_id=tg_id, animation=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "document":
-                    await bot.send_document(chat_id=tg_id, document=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_document(chat_id=tg_id, document=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "audio":
-                    await bot.send_audio(chat_id=tg_id, audio=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_audio(chat_id=tg_id, audio=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "voice":
-                    await bot.send_voice(chat_id=tg_id, voice=file_id, caption=content or None, reply_markup=keyboard)
+                    sent_message = await bot.send_voice(chat_id=tg_id, voice=file_id, caption=content or None, reply_markup=keyboard)
                 elif media_type == "video_note":
-                    await bot.send_video_note(chat_id=tg_id, video_note=file_id)
+                    sent_message = await bot.send_video_note(chat_id=tg_id, video_note=file_id)
                     if content or keyboard:
-                        await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
+                        sent_message = await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
                 elif media_type == "sticker":
-                    await bot.send_sticker(chat_id=tg_id, sticker=file_id)
+                    sent_message = await bot.send_sticker(chat_id=tg_id, sticker=file_id)
                     if content or keyboard:
-                        await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
+                        sent_message = await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
                 else:
-                    await bot.send_message(chat_id=tg_id, text=content or "")
+                    sent_message = await bot.send_message(chat_id=tg_id, text=content or "")
             else:
-                await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
+                sent_message = await bot.send_message(chat_id=tg_id, text=content or "", reply_markup=keyboard)
 
             sent += 1
             record_publication_stat(publication_id, subscriber_id, "sent")
+            if sent_message and getattr(sent_message, "message_id", None):
+                deliveries.append(
+                    {
+                        "subscriber_id": subscriber_id,
+                        "telegram_id": tg_id,
+                        "message_id": int(sent_message.message_id),
+                    }
+                )
         except Exception:
             failed += 1
             record_publication_stat(publication_id, subscriber_id, "failed")
@@ -217,10 +393,7 @@ async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
 
     is_recurring = int(pub.get("is_recurring") or 0) == 1
     if is_recurring:
-        interval = int(pub.get("repeat_every_minutes") or 0)
-        next_run_at = None
-        if interval > 0:
-            next_run_at = (datetime.utcnow() + timedelta(minutes=interval)).strftime("%Y-%m-%d %H:%M:%S")
+        next_run_at = compute_next_run(pub, from_time=datetime.utcnow())
         update_publication(publication_id, status="active", next_run_at=next_run_at)
     else:
         update_publication(publication_id, status="sent", next_run_at=None)
@@ -230,4 +403,5 @@ async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
         "sent": sent,
         "failed": failed,
         "total": len(recipients),
+        "deliveries": deliveries,
     }

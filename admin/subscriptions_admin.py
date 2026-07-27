@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -40,14 +41,21 @@ from services.subscriber_chat_service import (
     clear_subscriber_chat_history,
 )
 from services.subscriber_publication_service import (
+    compute_next_run,
     count_publication_recipients,
+    create_publication_delivery_record,
     create_publication_record,
     dispatch_publication,
+    get_delivery_record,
     get_publication,
     list_available_publication_permissions,
+    list_pending_delivery_records,
+    list_pending_deletion_records,
     list_publication_buttons,
     list_publications_paged,
+    mark_delivery_status,
     publication_stats,
+    replace_publication_buttons_record,
     remove_publication,
     update_publication_record,
 )
@@ -65,6 +73,7 @@ _AWAIT_PUB_TARGET_VALUE = "SUBS_AWAIT_PUB_TARGET_VALUE"
 _AWAIT_PUB_BUTTONS = "SUBS_AWAIT_PUB_BUTTONS"
 _AWAIT_PUB_SEARCH = "SUBS_AWAIT_PUB_SEARCH"
 _AWAIT_PUB_SCHEDULE = "SUBS_AWAIT_PUB_SCHEDULE"
+_AWAIT_PUB_AUTO_DELETE = "SUBS_AWAIT_PUB_AUTO_DELETE"
 _SEARCH_TERM = "subs_search_term"
 _CHAT_ID = "subs_chat_id"
 _MSG_ID = "subs_msg_id"
@@ -83,8 +92,10 @@ _PUB_TARGET_OPTIONS = "subs_pub_target_options"
 _PUB_PREVIEW_MSG_ID = "subs_pub_preview_msg_id"
 _PUB_PREVIEW_CHAT_ID = "subs_pub_preview_chat_id"
 _PUB_PREVIEW_CONFIRMED = "subs_pub_preview_confirmed"
+_PUB_EDIT_ID = "subs_pub_edit_id"
 _PUB_SCHEDULE_JOBS: dict[int, str] = {}
 _PUB_RECURRING_JOBS: dict[int, str] = {}
+_PUB_DELETE_JOBS: dict[int, str] = {}
 
 
 async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -257,6 +268,9 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
     if data == "SUBS_PUB_SCHEDULE":
         return await _prompt_publication_schedule(update, context)
 
+    if data == "SUBS_PUB_RECUR_MONTH":
+        return await _set_publication_monthly(update, context)
+
     if data.startswith("SUBS_PUB_DELAY_"):
         return await _set_publication_delay(update, context, data)
 
@@ -282,6 +296,18 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         if pub_id is None:
             return await _invalid_callback(update)
         return await _show_publication_details(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_EDIT_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_EDIT_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _start_publication_edit(update, context, pub_id)
+
+    if data == "SUBS_PUB_SAVE_EDIT":
+        return await _save_publication_edit(update, context)
+
+    if data.startswith("SUBS_PUB_AUTODEL_"):
+        return await _handle_publication_auto_delete(update, context, data)
 
     if data.startswith("SUBS_PUB_DELETE_"):
         pub_id = _parse_positive_int(data[len("SUBS_PUB_DELETE_"):])
@@ -311,7 +337,7 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         return await _prompt_publication_search(update, context)
 
     if data == "SUBS_PUB_AUTO_DELETE":
-        return await _show_coming_soon(update, "🧹 מחיקה אוטומטית", "SUBS_PUB_MENU")
+        return await _handle_publication_auto_delete(update, context, data)
 
     if data == "SUBS_PUB_STATS":
         return await _show_publication_stats_menu(update, context)
@@ -469,7 +495,7 @@ async def _show_publications_menu(update: Update) -> None:
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 יצירת פרסום", callback_data="SUBS_PUB_CREATE")],
             [InlineKeyboardButton("⏱️ תזמון", callback_data="SUBS_PUB_SCHEDULE")],
-            [InlineKeyboardButton("🧹 מחיקה אוטומטית (לא ממומש)", callback_data="SUBS_PUB_AUTO_DELETE")],
+            [InlineKeyboardButton("🧹 מחיקה אוטומטית", callback_data="SUBS_PUB_AUTO_DELETE")],
             [InlineKeyboardButton("📚 רשימת פרסומים", callback_data="SUBS_PUB_LIST")],
             [InlineKeyboardButton("📈 סטטיסטיקת פרסום", callback_data="SUBS_PUB_STATS")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_MAIN")],
@@ -482,6 +508,7 @@ def _clear_publication_draft(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(_PUB_DRAFT, None)
     context.user_data.pop(_PUB_TARGET_OPTIONS, None)
     context.user_data.pop(_PUB_PREVIEW_CONFIRMED, None)
+    context.user_data.pop(_PUB_EDIT_ID, None)
 
 
 async def _clear_publication_preview_message(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -524,11 +551,48 @@ def _publication_target_label(target_type: str, target_value: str | None) -> str
 def _publication_status_label(status: str) -> str:
     return {
         "draft": "טיוטה",
-        "scheduled": "ממתין",
-        "active": "מחזורי פעיל",
+        "scheduled": "מתוזמן",
+        "active": "פעיל",
         "sent": "הסתיים",
+        "sending": "שולח",
         "canceled": "בוטל",
     }.get(status, status)
+
+
+def _fmt_iso(ts: str | None) -> str:
+    if not ts:
+        return "-"
+    try:
+        dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(ts)
+
+
+def _recurrence_label(pub: dict) -> str:
+    if int(pub.get("is_recurring") or 0) != 1:
+        return "לא"
+    r_type = str(pub.get("recurrence_type") or "interval").lower()
+    minutes = int(pub.get("repeat_every_minutes") or 0)
+    if r_type == "daily":
+        return f"יומי {pub.get('recurrence_time') or ''}".strip()
+    if r_type == "weekly":
+        days = str(pub.get("recurrence_weekdays") or "")
+        return f"שבועי ({days or '-'}) {pub.get('recurrence_time') or ''}".strip()
+    if r_type == "monthly":
+        dom = pub.get("recurrence_day_of_month") or "-"
+        return f"חודשי יום {dom} {pub.get('recurrence_time') or ''}".strip()
+    if minutes == 60:
+        return "כל שעה"
+    if minutes == 120:
+        return "כל שעתיים"
+    if minutes == 1440:
+        return "כל יום"
+    if minutes == 10080:
+        return "כל שבוע"
+    if minutes > 0:
+        return f"כל {minutes} דקות"
+    return "מחזורי"
 
 
 def _draft_preview_text(draft: dict) -> str:
@@ -539,7 +603,9 @@ def _draft_preview_text(draft: dict) -> str:
     buttons = draft.get("buttons") or []
     schedule = draft.get("schedule_at") or "מיידי"
     recurring = draft.get("recurring_every")
+    auto_delete_minutes = int(draft.get("auto_delete_minutes") or 0)
     recurring_text = f"כל {recurring} דקות" if recurring else "לא"
+    auto_delete_text = f"אחרי {auto_delete_minutes} דקות" if auto_delete_minutes > 0 else "כבוי"
     recipients = count_publication_recipients(target_type, target_value)
     content_preview = content[:300] if content else "(ללא טקסט)"
     return (
@@ -549,6 +615,7 @@ def _draft_preview_text(draft: dict) -> str:
         f"🎞️ מדיה: <b>{media_type}</b>\n"
         f"⏱️ תזמון: <b>{schedule}</b>\n"
         f"🔁 מחזורי: <b>{recurring_text}</b>\n"
+        f"🧹 מחיקה אוטומטית: <b>{auto_delete_text}</b>\n"
         f"🔘 כפתורים: <b>{len(buttons)}</b>\n\n"
         f"💬 תוכן:\n{content_preview}"
     )
@@ -648,6 +715,7 @@ async def _start_publication_create(update: Update, context: ContextTypes.DEFAUL
         "buttons": [],
         "schedule_at": None,
         "recurring_every": None,
+        "auto_delete_minutes": 0,
     }
     context.user_data[_STATE] = _AWAIT_PUB_CONTENT
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
@@ -708,17 +776,154 @@ async def _show_publication_preview(update: Update, context: ContextTypes.DEFAUL
     draft = context.user_data.get(_PUB_DRAFT) or {}
     await _send_real_publication_preview(context, update.callback_query.message.chat_id, draft)
     context.user_data[_PUB_PREVIEW_CONFIRMED] = True
+    rows = [
+        [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
+        [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
+        [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        [InlineKeyboardButton("🧹 מחיקה אוטומטית", callback_data="SUBS_PUB_AUTO_DELETE")],
+        [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
+        [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
+        [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
+        [InlineKeyboardButton("🔁 כל חודש", callback_data="SUBS_PUB_RECUR_MONTH")],
+    ]
+    if int(context.user_data.get(_PUB_EDIT_ID) or 0) > 0:
+        rows.append([InlineKeyboardButton("💾 שמירה", callback_data="SUBS_PUB_SAVE_EDIT")])
+    rows.append([InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")])
     await _safe_query_edit(
         update,
         text=_draft_preview_text(draft),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _start_publication_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    pub = get_publication(publication_id)
+    if not pub:
+        await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
+        return
+
+    buttons = list_publication_buttons(publication_id)
+    context.user_data[_PUB_EDIT_ID] = publication_id
+    context.user_data[_PUB_PREVIEW_CONFIRMED] = True
+    context.user_data[_PUB_DRAFT] = {
+        "title": pub.get("title") or "פרסום",
+        "content_text": pub.get("content_text") or "",
+        "media_type": pub.get("media_type"),
+        "file_id": pub.get("file_id"),
+        "target_type": pub.get("target_type") or "all",
+        "target_value": pub.get("target_value"),
+        "buttons": [{"title": b.get("title") or "", "url": b.get("url") or ""} for b in buttons],
+        "auto_delete_minutes": int(pub.get("auto_delete_minutes") or 0),
+    }
+    await _show_publication_preview(update, context)
+
+
+async def _save_publication_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+    if pub_id <= 0:
+        await update.callback_query.answer("אין פרסום לעריכה", show_alert=True)
+        return
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    update_publication_record(
+        pub_id,
+        title=draft.get("title") or "פרסום",
+        content_text=draft.get("content_text") or "",
+        media_type=draft.get("media_type"),
+        file_id=draft.get("file_id"),
+        target_type=draft.get("target_type") or "all",
+        target_value=draft.get("target_value"),
+        auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+    )
+    replace_publication_buttons_record(pub_id, draft.get("buttons") or [])
+    await _clear_publication_preview_message(context)
+    _clear_publication_draft(context)
+    await _safe_query_edit(
+        update,
+        text=f"✅ השינויים נשמרו בפרסום #{pub_id}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎯 שינוי יעד", callback_data="SUBS_PUB_TARGET_PICK")],
-            [InlineKeyboardButton("✏️ עריכת תוכן", callback_data="SUBS_PUB_EDIT_CONTENT")],
-            [InlineKeyboardButton("🔘 עריכת כפתורים", callback_data="SUBS_PUB_EDIT_BUTTONS")],
-            [InlineKeyboardButton("🚀 שליחה מיידית", callback_data="SUBS_PUB_SEND_NOW")],
-            [InlineKeyboardButton("⏱️ תזמון / טיימר", callback_data="SUBS_PUB_SCHEDULE")],
-            [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
-            [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_PUB_CANCEL_DRAFT")],
+            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_publication_auto_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    if data == "SUBS_PUB_AUTO_DELETE":
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        if not draft and int(context.user_data.get(_PUB_EDIT_ID) or 0) <= 0:
+            return await _show_publications_list(update, context, page=1)
+        current = int(draft.get("auto_delete_minutes") or 0)
+        await _safe_query_edit(
+            update,
+            text=(
+                "🧹 <b>מחיקה אוטומטית</b>\n\n"
+                f"מצב נוכחי: <b>{(str(current) + ' דקות') if current > 0 else 'כבוי'}</b>\n"
+                "בחר ערך או שלח מספר דקות בצ׳אט."
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("כבוי", callback_data="SUBS_PUB_AUTODEL_SET_0")],
+                [InlineKeyboardButton("30 דק׳", callback_data="SUBS_PUB_AUTODEL_SET_30")],
+                [InlineKeyboardButton("60 דק׳", callback_data="SUBS_PUB_AUTODEL_SET_60")],
+                [InlineKeyboardButton("24 שעות", callback_data="SUBS_PUB_AUTODEL_SET_1440")],
+                [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_PREVIEW")],
+            ]),
+            parse_mode="HTML",
+        )
+        context.user_data[_STATE] = _AWAIT_PUB_AUTO_DELETE
+        context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+        context.user_data[_MSG_ID] = update.callback_query.message.message_id
+        return
+
+    if data.startswith("SUBS_PUB_AUTODEL_SET_"):
+        value = _parse_positive_int(data[len("SUBS_PUB_AUTODEL_SET_"):])
+        minutes = int(value or 0)
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        draft["auto_delete_minutes"] = minutes
+        context.user_data[_PUB_DRAFT] = draft
+        pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+        if pub_id > 0:
+            update_publication_record(pub_id, auto_delete_minutes=minutes)
+        context.user_data.pop(_STATE, None)
+        return await _show_publication_preview(update, context)
+
+    if data.startswith("SUBS_PUB_AUTODEL_APPLY_"):
+        payload = data[len("SUBS_PUB_AUTODEL_APPLY_"):]
+        parts = payload.split("_", 1)
+        if len(parts) != 2:
+            await update.callback_query.answer("ערך לא תקין", show_alert=True)
+            return
+        pub_id = _parse_positive_int(parts[0])
+        minutes = int(_parse_positive_int(parts[1]) or 0)
+        if pub_id is None:
+            await update.callback_query.answer("פרסום לא תקין", show_alert=True)
+            return
+        update_publication_record(pub_id, auto_delete_minutes=minutes)
+        await update.callback_query.answer("נשמר")
+        return await _show_publication_details(update, context, pub_id)
+
+    pub_id = _parse_positive_int(data[len("SUBS_PUB_AUTODEL_"):])
+    if pub_id is None:
+        await update.callback_query.answer("ערך לא תקין", show_alert=True)
+        return
+    pub = get_publication(pub_id)
+    if not pub:
+        await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
+        return
+    current = int(pub.get("auto_delete_minutes") or 0)
+    await _safe_query_edit(
+        update,
+        text=(
+            f"🧹 <b>מחיקה אוטומטית לפרסום #{pub_id}</b>\n\n"
+            f"מצב נוכחי: <b>{(str(current) + ' דקות') if current > 0 else 'כבוי'}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("כבוי", callback_data=f"SUBS_PUB_AUTODEL_APPLY_{pub_id}_0")],
+            [InlineKeyboardButton("30 דק׳", callback_data=f"SUBS_PUB_AUTODEL_APPLY_{pub_id}_30")],
+            [InlineKeyboardButton("60 דק׳", callback_data=f"SUBS_PUB_AUTODEL_APPLY_{pub_id}_60")],
+            [InlineKeyboardButton("24 שעות", callback_data=f"SUBS_PUB_AUTODEL_APPLY_{pub_id}_1440")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
         ]),
         parse_mode="HTML",
     )
@@ -858,6 +1063,7 @@ async def _send_publication_now(update: Update, context: ContextTypes.DEFAULT_TY
 
     started = datetime.utcnow()
     result = await dispatch_publication(context.bot, pub_id)
+    await _process_publication_auto_delete(context, pub_id, result)
     elapsed = (datetime.utcnow() - started).total_seconds()
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
@@ -922,7 +1128,12 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
             "• בעוד 10 דקות\n"
             "• בעוד שעתיים\n"
             "• בעוד יום\n\n"
-            "או שלח תאריך ושעה בפורמט: YYYY-MM-DD HH:MM"
+            "או שלח תזמון ידני:\n"
+            "• חד-פעמי: YYYY-MM-DD HH:MM או DD/MM/YYYY HH:MM\n"
+            "• יומי: כל יום HH:MM\n"
+            "• שבועי: כל יום שישי HH:MM\n"
+            "• ימים מסוימים: ימים שני,רביעי HH:MM\n"
+            "• חודשי: כל חודש 15 18:00"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("+10 דקות", callback_data="SUBS_PUB_DELAY_10m")],
@@ -1018,21 +1229,59 @@ async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAU
         return
 
     payload = _build_send_payload_from_draft(draft)
-    next_run_at = (datetime.utcnow() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-    pub_id = create_publication_record(
-        title=payload["title"],
-        content_text=payload["content_text"],
-        media_type=payload["media_type"],
-        file_id=payload["file_id"],
-        target_type=payload["target_type"],
-        target_value=payload["target_value"],
-        status="active",
-        created_by=update.callback_query.from_user.id,
-        is_recurring=1,
-        repeat_every_minutes=minutes,
-        next_run_at=next_run_at,
-        buttons=payload["buttons"],
-    )
+    next_dt = datetime.utcnow() + timedelta(minutes=minutes)
+    next_run_at = next_dt.strftime("%Y-%m-%d %H:%M:%S")
+    edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+    if edit_pub_id > 0:
+        ok = update_publication_record(
+            edit_pub_id,
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="active",
+            is_recurring=1,
+            repeat_every_minutes=minutes,
+            recurrence_type="interval",
+            recurrence_weekdays=None,
+            recurrence_day_of_month=None,
+            recurrence_time=None,
+            next_run_at=next_run_at,
+            scheduled_at=next_run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+        )
+        if not ok:
+            await _safe_query_edit(
+                update,
+                text="⚠️ שגיאה בעדכון פרסום מחזורי.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה לתזמון", callback_data="SUBS_PUB_SCHEDULE")],
+                    [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+                ]),
+                parse_mode="HTML",
+            )
+            return
+        replace_publication_buttons_record(edit_pub_id, payload["buttons"])
+        pub_id = edit_pub_id
+    else:
+        pub_id = create_publication_record(
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="active",
+            created_by=update.callback_query.from_user.id,
+            is_recurring=1,
+            repeat_every_minutes=minutes,
+            recurrence_type="interval",
+            next_run_at=next_run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+            buttons=payload["buttons"],
+        )
     if pub_id <= 0:
         await _safe_query_edit(
             update,
@@ -1044,13 +1293,95 @@ async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAU
             parse_mode="HTML",
         )
         return
-    await _schedule_recurring_job(context, pub_id, minutes)
+    await _schedule_recurring_job(context, pub_id, next_dt)
     context.user_data.pop(_STATE, None)
     await _clear_publication_preview_message(context)
     _clear_publication_draft(context)
     await _safe_query_edit(
         update,
         text=f"✅ פרסום מחזורי הופעל.\nתדירות: כל {minutes} דקות.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _set_publication_monthly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
+        await update.callback_query.answer("יש לפתוח תצוגה מקדימה לפני הפעלה.", show_alert=True)
+        return
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    if not (draft.get("content_text") or draft.get("file_id")):
+        await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
+        return
+
+    now = datetime.utcnow()
+    day_of_month = now.day
+    hour = now.hour
+    minute = now.minute
+    recurrence_time = f"{hour:02d}:{minute:02d}"
+    next_month = now.replace(day=1, hour=hour, minute=minute, second=0, microsecond=0)
+    next_month = (next_month + timedelta(days=32)).replace(day=min(day_of_month, 28))
+    next_run_at = next_month.strftime("%Y-%m-%d %H:%M:%S")
+
+    payload = _build_send_payload_from_draft(draft)
+    edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+    if edit_pub_id > 0:
+        ok = update_publication_record(
+            edit_pub_id,
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="active",
+            is_recurring=1,
+            repeat_every_minutes=43200,
+            recurrence_type="monthly",
+            recurrence_day_of_month=day_of_month,
+            recurrence_time=recurrence_time,
+            next_run_at=next_run_at,
+            scheduled_at=next_run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+        )
+        if not ok:
+            await update.callback_query.answer("שגיאה בעדכון", show_alert=True)
+            return
+        replace_publication_buttons_record(edit_pub_id, payload["buttons"])
+        pub_id = edit_pub_id
+    else:
+        pub_id = create_publication_record(
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="active",
+            created_by=update.callback_query.from_user.id,
+            is_recurring=1,
+            repeat_every_minutes=43200,
+            recurrence_type="monthly",
+            recurrence_day_of_month=day_of_month,
+            recurrence_time=recurrence_time,
+            next_run_at=next_run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+            buttons=payload["buttons"],
+        )
+    if pub_id <= 0:
+        await update.callback_query.answer("שגיאה ביצירת פרסום חודשי", show_alert=True)
+        return
+
+    await _schedule_recurring_job(context, pub_id, datetime.strptime(next_run_at, "%Y-%m-%d %H:%M:%S"))
+    context.user_data.pop(_STATE, None)
+    await _clear_publication_preview_message(context)
+    _clear_publication_draft(context)
+    await _safe_query_edit(
+        update,
+        text=f"✅ פרסום חודשי הופעל.\nהפעלה ראשונה: {next_run_at}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
@@ -1085,19 +1416,47 @@ async def _save_scheduled_publication(update: Update, context: ContextTypes.DEFA
         return
     payload = _build_send_payload_from_draft(draft)
     run_at = run_dt.strftime("%Y-%m-%d %H:%M:%S")
-    pub_id = create_publication_record(
-        title=payload["title"],
-        content_text=payload["content_text"],
-        media_type=payload["media_type"],
-        file_id=payload["file_id"],
-        target_type=payload["target_type"],
-        target_value=payload["target_value"],
-        status="scheduled",
-        created_by=update.callback_query.from_user.id,
-        scheduled_at=run_at,
-        next_run_at=run_at,
-        buttons=payload["buttons"],
-    )
+    edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+    if edit_pub_id > 0:
+        ok = update_publication_record(
+            edit_pub_id,
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="scheduled",
+            is_recurring=0,
+            repeat_every_minutes=None,
+            recurrence_type=None,
+            recurrence_weekdays=None,
+            recurrence_day_of_month=None,
+            recurrence_time=None,
+            scheduled_at=run_at,
+            next_run_at=run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+        )
+        if not ok:
+            pub_id = 0
+        else:
+            replace_publication_buttons_record(edit_pub_id, payload["buttons"])
+            pub_id = edit_pub_id
+    else:
+        pub_id = create_publication_record(
+            title=payload["title"],
+            content_text=payload["content_text"],
+            media_type=payload["media_type"],
+            file_id=payload["file_id"],
+            target_type=payload["target_type"],
+            target_value=payload["target_value"],
+            status="scheduled",
+            created_by=update.callback_query.from_user.id,
+            scheduled_at=run_at,
+            next_run_at=run_at,
+            auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+            buttons=payload["buttons"],
+        )
     if pub_id <= 0:
         await _safe_query_edit(
             update,
@@ -1136,10 +1495,18 @@ async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_
         page = 1
 
     rows = []
+    lines = [f"📚 <b>רשימת פרסומים</b>", f"עמוד {page}/{total_pages} • סה״כ {total}", ""]
     for p in rows_data:
         status = _publication_status_label(str(p.get("status") or ""))
-        title = (p.get("title") or "פרסום").strip()
-        rows.append([InlineKeyboardButton(f"#{p['id']} · {status} · {title[:20]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+        title = (p.get("title") or "פרסום ללא כותרת").strip()
+        target = _publication_target_label(str(p.get("target_type") or "all"), p.get("target_value"))
+        next_run = _fmt_iso(str(p.get("next_run_at") or ""))
+        last_sent = _fmt_iso(str(p.get("last_sent_at") or ""))
+        lines.append(
+            f"#{p['id']} | <b>{title[:44]}</b> | {status}\n"
+            f"יעד: {target} | הבא: {next_run} | אחרון: {last_sent}"
+        )
+        rows.append([InlineKeyboardButton(f"📄 פתח #{p['id']} · {title[:24]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
 
     nav = []
     if page > 1:
@@ -1154,7 +1521,7 @@ async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_
 
     await _safe_query_edit(
         update,
-        text=f"📚 <b>רשימת פרסומים</b>\nעמוד {page}/{total_pages} • סה״כ {total}",
+        text="\n\n".join(lines),
         reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML",
     )
@@ -1166,20 +1533,29 @@ async def _show_publication_details(update: Update, context: ContextTypes.DEFAUL
         await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
         return
     status = str(p.get("status") or "")
+    pending_targets = count_publication_recipients(str(p.get("target_type") or "all"), p.get("target_value")) if status in {"scheduled", "active"} else 0
+    auto_delete_minutes = int(p.get("auto_delete_minutes") or 0)
     text = (
         f"📄 <b>פרסום #{publication_id}</b>\n\n"
+        f"כותרת: <b>{(p.get('title') or 'פרסום ללא כותרת')}</b>\n"
         f"מצב: <b>{_publication_status_label(status)}</b>\n"
+        f"מחזוריות: <b>{_recurrence_label(p)}</b>\n"
         f"יעד: <b>{_publication_target_label(str(p.get('target_type') or 'all'), p.get('target_value'))}</b>\n"
-        f"תזמון: <b>{p.get('scheduled_at') or '-'}</b>\n"
-        f"מחזורי: <b>{'כן' if int(p.get('is_recurring') or 0) == 1 else 'לא'}</b>\n"
+        f"שליחה מתוכננת: <b>{_fmt_iso(p.get('scheduled_at'))}</b>\n"
+        f"שליחה הבאה: <b>{_fmt_iso(p.get('next_run_at'))}</b>\n"
+        f"שליחה אחרונה: <b>{_fmt_iso(p.get('last_sent_at'))}</b>\n"
+        f"מחיקה אוטומטית: <b>{(str(auto_delete_minutes) + ' דקות') if auto_delete_minutes > 0 else 'כבוי'}</b>\n"
         f"מוצלח: <b>{p.get('sent_success_count') or 0}</b> | נכשל: <b>{p.get('sent_fail_count') or 0}</b>\n"
+        f"ממתין: <b>{pending_targets}</b>\n"
         f"יעד כולל: <b>{p.get('total_targets') or 0}</b>"
     )
-    rows = [[InlineKeyboardButton("🚀 שלח עכשיו", callback_data=f"SUBS_PUB_RUN_{publication_id}")]]
+    rows = [[InlineKeyboardButton("✏️ עריכה מלאה", callback_data=f"SUBS_PUB_EDIT_{publication_id}")]]
+    rows.append([InlineKeyboardButton("🚀 שלח עכשיו", callback_data=f"SUBS_PUB_RUN_{publication_id}")])
     if status in {"scheduled", "active"}:
         rows.append([InlineKeyboardButton("⛔ עצור", callback_data=f"SUBS_PUB_CANCEL_{publication_id}")])
     if status == "canceled" and int(p.get("is_recurring") or 0) == 1:
         rows.append([InlineKeyboardButton("▶️ הפעלה מחדש", callback_data=f"SUBS_PUB_RESUME_{publication_id}")])
+    rows.append([InlineKeyboardButton("🧹 מחיקה אוטומטית", callback_data=f"SUBS_PUB_AUTODEL_{publication_id}")])
     rows.append([InlineKeyboardButton("📈 סטטיסטיקה", callback_data=f"SUBS_PUB_STATS_VIEW_{publication_id}")])
     rows.append([InlineKeyboardButton("🗑️ מחיקה", callback_data=f"SUBS_PUB_DELETE_{publication_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")])
@@ -1195,13 +1571,14 @@ async def _delete_publication(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def _run_publication_now(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
     result = await dispatch_publication(context.bot, publication_id)
+    await _process_publication_auto_delete(context, publication_id, result)
     await update.callback_query.answer("נשלח" if result.get("ok") else "שליחה נכשלה", show_alert=not result.get("ok"))
     await _show_publication_details(update, context, publication_id)
 
 
 async def _cancel_publication(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
     await _cancel_publication_jobs(context, publication_id)
-    update_publication_record(publication_id, status="canceled")
+    update_publication_record(publication_id, status="canceled", next_run_at=None)
     await update.callback_query.answer("הפרסום בוטל")
     await _show_publication_details(update, context, publication_id)
 
@@ -1214,12 +1591,12 @@ async def _resume_publication(update: Update, context: ContextTypes.DEFAULT_TYPE
     if int(p.get("is_recurring") or 0) != 1:
         await update.callback_query.answer("רק למחזורי ניתן להפעיל מחדש", show_alert=True)
         return
-    minutes = int(p.get("repeat_every_minutes") or 0)
-    if minutes <= 0:
+    next_run = compute_next_run(p, from_time=datetime.utcnow())
+    if not next_run:
         await update.callback_query.answer("תדירות לא תקינה", show_alert=True)
         return
-    update_publication_record(publication_id, status="active")
-    await _schedule_recurring_job(context, publication_id, minutes)
+    update_publication_record(publication_id, status="active", next_run_at=next_run)
+    await _schedule_recurring_job(context, publication_id, datetime.strptime(next_run, "%Y-%m-%d %H:%M:%S"))
     await update.callback_query.answer("הופעל מחדש")
     await _show_publication_details(update, context, publication_id)
 
@@ -1252,10 +1629,13 @@ async def _show_publication_stats_for_one(update: Update, context: ContextTypes.
     stats = publication_stats(publication_id)
     pub = stats.get("publication") or {}
     events = stats.get("events") or {}
+    pending_targets = count_publication_recipients(str(pub.get("target_type") or "all"), pub.get("target_value")) if str(pub.get("status") or "") in {"scheduled", "active"} else 0
     text = (
         f"📈 <b>סטטיסטיקה לפרסום #{publication_id}</b>\n\n"
         f"יעד: <b>{_publication_target_label(str(pub.get('target_type') or 'all'), pub.get('target_value'))}</b>\n"
-        f"זמן שליחה אחרון: <b>{pub.get('last_sent_at') or '-'}</b>\n"
+        f"זמן שליחה אחרון: <b>{_fmt_iso(pub.get('last_sent_at'))}</b>\n"
+        f"זמן שליחה הבא: <b>{_fmt_iso(pub.get('next_run_at'))}</b>\n"
+        f"ממתין: <b>{pending_targets}</b>\n"
         f"נשלחו: <b>{events.get('sent', 0)}</b>\n"
         f"נכשלו: <b>{events.get('failed', 0)}</b>\n"
         f"מונה הצלחות: <b>{pub.get('sent_success_count') or 0}</b>\n"
@@ -1291,11 +1671,23 @@ async def _bootstrap_publication_jobs(context: ContextTypes.DEFAULT_TYPE) -> Non
         elif status == "active" and int(p.get("is_recurring") or 0) == 1:
             minutes = int(p.get("repeat_every_minutes") or 0)
             if minutes > 0:
-                await _schedule_recurring_job(context, pub_id, minutes)
+                next_run_raw = str(p.get("next_run_at") or "").strip()
+                next_run_dt = None
+                if next_run_raw:
+                    try:
+                        next_run_dt = datetime.strptime(next_run_raw, "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        next_run_dt = None
+                if next_run_dt is None:
+                    next_run_dt = now + timedelta(minutes=minutes)
+                    update_publication_record(pub_id, next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"))
+                await _schedule_recurring_job(context, pub_id, next_run_dt)
+    await _bootstrap_publication_delete_jobs(context)
 
 
 async def _run_publication_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
-    await dispatch_publication(context.bot, publication_id)
+    result = await dispatch_publication(context.bot, publication_id)
+    await _process_publication_auto_delete(context, publication_id, result)
 
 
 async def _schedule_one_time_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, run_at: datetime) -> None:
@@ -1311,15 +1703,13 @@ async def _schedule_one_time_job(context: ContextTypes.DEFAULT_TYPE, publication
     _PUB_SCHEDULE_JOBS[publication_id] = job.name
 
 
-async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, minutes: int) -> None:
+async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, run_at: datetime) -> None:
     await _cancel_publication_jobs(context, publication_id)
     if not context.job_queue:
         return
-    interval = max(1, minutes) * 60
-    job = context.job_queue.run_repeating(
+    job = context.job_queue.run_once(
         _publication_job_callback,
-        interval=interval,
-        first=5,
+        when=run_at,
         data={"publication_id": publication_id, "mode": "repeat"},
         name=f"pub_repeat_{publication_id}",
     )
@@ -1331,6 +1721,17 @@ async def _cancel_publication_jobs(context: ContextTypes.DEFAULT_TYPE, publicati
         for job in context.job_queue.jobs():
             if job.name in {f"pub_once_{publication_id}", f"pub_repeat_{publication_id}"}:
                 job.schedule_removal()
+
+        deliveries = list_pending_delivery_records(publication_id)
+        for d in deliveries:
+            delivery_id = int(d.get("id") or 0)
+            if delivery_id <= 0:
+                continue
+            job_name = f"pub_del_{delivery_id}"
+            for job in context.job_queue.jobs():
+                if job.name == job_name:
+                    job.schedule_removal()
+            _PUB_DELETE_JOBS.pop(delivery_id, None)
     _PUB_SCHEDULE_JOBS.pop(publication_id, None)
     _PUB_RECURRING_JOBS.pop(publication_id, None)
 
@@ -1353,7 +1754,236 @@ async def _publication_job_callback(job_context) -> None:
     if mode == "repeat" and (status != "active" or not is_recurring):
         return
 
-    await dispatch_publication(job_context.bot, publication_id)
+    result = await dispatch_publication(job_context.bot, publication_id)
+    await _process_publication_auto_delete(job_context, publication_id, result)
+
+    if mode == "repeat":
+        publication = get_publication(publication_id)
+        if not publication:
+            return
+        if str(publication.get("status") or "") != "active":
+            return
+        next_run_raw = str(publication.get("next_run_at") or "").strip()
+        if not next_run_raw:
+            return
+        try:
+            next_run_dt = datetime.strptime(next_run_raw, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return
+        await _schedule_recurring_job(job_context, publication_id, next_run_dt)
+
+
+async def _bootstrap_publication_delete_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
+    rows = list_pending_deletion_records()
+    for row in rows:
+        delivery_id = int(row.get("id") or 0)
+        if delivery_id <= 0:
+            continue
+        delete_at = str(row.get("delete_at") or "")
+        try:
+            run_at = datetime.strptime(delete_at, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            run_at = datetime.utcnow()
+        await _schedule_publication_delete_job(context, delivery_id, run_at)
+
+
+async def _schedule_publication_delete_job(context: ContextTypes.DEFAULT_TYPE, delivery_id: int, run_at: datetime) -> None:
+    if not context.job_queue:
+        return
+    job_name = f"pub_del_{delivery_id}"
+    for job in context.job_queue.jobs():
+        if job.name == job_name:
+            job.schedule_removal()
+    job = context.job_queue.run_once(
+        _publication_delete_job_callback,
+        when=run_at,
+        data={"delivery_id": delivery_id},
+        name=job_name,
+    )
+    _PUB_DELETE_JOBS[delivery_id] = job.name
+
+
+async def _publication_delete_job_callback(job_context) -> None:
+    delivery_id = int((job_context.job.data or {}).get("delivery_id") or 0)
+    if delivery_id <= 0:
+        return
+    delivery = get_delivery_record(delivery_id)
+    if not delivery:
+        _PUB_DELETE_JOBS.pop(delivery_id, None)
+        return
+    if str(delivery.get("status") or "") != "pending":
+        _PUB_DELETE_JOBS.pop(delivery_id, None)
+        return
+    chat_id = int(delivery.get("telegram_id") or 0)
+    message_id = int(delivery.get("message_id") or 0)
+    if chat_id <= 0 or message_id <= 0:
+        mark_delivery_status(delivery_id, "failed")
+        _PUB_DELETE_JOBS.pop(delivery_id, None)
+        return
+    try:
+        await job_context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        mark_delivery_status(delivery_id, "deleted")
+    except Exception:
+        mark_delivery_status(delivery_id, "failed")
+    _PUB_DELETE_JOBS.pop(delivery_id, None)
+
+
+async def _process_publication_auto_delete(context: ContextTypes.DEFAULT_TYPE, publication_id: int, result: dict) -> None:
+    deliveries = result.get("deliveries") or []
+    if not deliveries:
+        return
+    pub = get_publication(publication_id)
+    if not pub:
+        return
+    minutes = int(pub.get("auto_delete_minutes") or 0)
+    if minutes <= 0:
+        return
+    delete_at_dt = datetime.utcnow() + timedelta(minutes=minutes)
+    delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+    update_publication_record(publication_id, auto_delete_at=delete_at)
+    for item in deliveries:
+        delivery_id = create_publication_delivery_record(
+            publication_id=publication_id,
+            subscriber_id=int(item.get("subscriber_id") or 0) or None,
+            telegram_id=int(item.get("telegram_id") or 0),
+            message_id=int(item.get("message_id") or 0),
+            delete_at=delete_at,
+        )
+        if delivery_id > 0:
+            await _schedule_publication_delete_job(context, delivery_id, delete_at_dt)
+
+
+def _parse_user_datetime(raw: str) -> datetime | None:
+    normalized = raw.strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M"):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _next_time_today_or_tomorrow(now: datetime, hour: int, minute: int) -> datetime:
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate = candidate + timedelta(days=1)
+    return candidate
+
+
+def _next_weekday_time(now: datetime, weekday: int, hour: int, minute: int) -> datetime:
+    current = now.weekday()
+    days_ahead = (weekday - current) % 7
+    candidate = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate = candidate + timedelta(days=7)
+    return candidate
+
+
+def _parse_manual_recurrence(raw: str, now: datetime) -> dict | None:
+    text = " ".join(raw.strip().lower().split())
+
+    m_daily = re.fullmatch(r"(?:כל יום|daily)\s+(\d{1,2}):(\d{2})", text)
+    if m_daily:
+        hour = int(m_daily.group(1))
+        minute = int(m_daily.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return {
+                "repeat_every_minutes": 1440,
+                "recurrence_type": "daily",
+                "recurrence_weekdays": None,
+                "recurrence_day_of_month": None,
+                "recurrence_time": f"{hour:02d}:{minute:02d}",
+                "first_run_dt": _next_time_today_or_tomorrow(now, hour, minute),
+            }
+        return None
+
+    weekday_map = {
+        "ראשון": 6,
+        "שני": 0,
+        "שלישי": 1,
+        "רביעי": 2,
+        "חמישי": 3,
+        "שישי": 4,
+        "שבת": 5,
+    }
+
+    m_weekly_he = re.fullmatch(r"כל יום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)\s+(\d{1,2}):(\d{2})", text)
+    if m_weekly_he:
+        weekday_name = m_weekly_he.group(1)
+        hour = int(m_weekly_he.group(2))
+        minute = int(m_weekly_he.group(3))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            weekday = weekday_map[weekday_name]
+            return {
+                "repeat_every_minutes": 10080,
+                "recurrence_type": "weekly",
+                "recurrence_weekdays": str(weekday),
+                "recurrence_day_of_month": None,
+                "recurrence_time": f"{hour:02d}:{minute:02d}",
+                "first_run_dt": _next_weekday_time(now, weekday, hour, minute),
+            }
+        return None
+
+    m_multi_weekdays = re.fullmatch(r"ימים\s+([א-ת, ]+)\s+(\d{1,2}):(\d{2})", text)
+    if m_multi_weekdays:
+        names_raw = m_multi_weekdays.group(1)
+        hour = int(m_multi_weekdays.group(2))
+        minute = int(m_multi_weekdays.group(3))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        day_tokens = [x.strip() for x in names_raw.split(",") if x.strip()]
+        weekdays: list[int] = []
+        for token in day_tokens:
+            if token in weekday_map:
+                weekdays.append(weekday_map[token])
+        weekdays = sorted(set(weekdays))
+        if not weekdays:
+            return None
+        first_run = min(_next_weekday_time(now, wd, hour, minute) for wd in weekdays)
+        return {
+            "repeat_every_minutes": 10080,
+            "recurrence_type": "weekly",
+            "recurrence_weekdays": ",".join(str(x) for x in weekdays),
+            "recurrence_day_of_month": None,
+            "recurrence_time": f"{hour:02d}:{minute:02d}",
+            "first_run_dt": first_run,
+        }
+
+    m_weekly_en = re.fullmatch(r"(?:weekly|every week)\s+(\d{1,2}):(\d{2})", text)
+    if m_weekly_en:
+        hour = int(m_weekly_en.group(1))
+        minute = int(m_weekly_en.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return {
+                "repeat_every_minutes": 10080,
+                "recurrence_type": "weekly",
+                "recurrence_weekdays": str(now.weekday()),
+                "recurrence_day_of_month": None,
+                "recurrence_time": f"{hour:02d}:{minute:02d}",
+                "first_run_dt": _next_weekday_time(now, now.weekday(), hour, minute),
+            }
+        return None
+
+    m_monthly = re.fullmatch(r"כל חודש\s+(\d{1,2})\s+(\d{1,2}):(\d{2})", text)
+    if m_monthly:
+        day_of_month = int(m_monthly.group(1))
+        hour = int(m_monthly.group(2))
+        minute = int(m_monthly.group(3))
+        if 1 <= day_of_month <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59:
+            first = now.replace(day=min(day_of_month, 28), hour=hour, minute=minute, second=0, microsecond=0)
+            if first <= now:
+                first = (first.replace(day=1) + timedelta(days=32)).replace(day=min(day_of_month, 28))
+            return {
+                "repeat_every_minutes": 43200,
+                "recurrence_type": "monthly",
+                "recurrence_weekdays": None,
+                "recurrence_day_of_month": day_of_month,
+                "recurrence_time": f"{hour:02d}:{minute:02d}",
+                "first_run_dt": first,
+            }
+        return None
+
+    return None
 
 
 async def _prompt_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2461,32 +3091,183 @@ async def handle_subscriptions_input(
             pass
         return
 
+    if state == _AWAIT_PUB_AUTO_DELETE:
+        raw = (update.message.text or "").strip()
+        if not raw:
+            return
+        if raw == "0":
+            minutes = 0
+        else:
+            parsed = _parse_positive_int(raw)
+            if parsed is None:
+                await update.message.reply_text("שלח מספר דקות חוקי. לדוגמה: 30, 60, 1440 או 0 לכיבוי.")
+                return
+            minutes = int(parsed)
+
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        draft["auto_delete_minutes"] = minutes
+        context.user_data[_PUB_DRAFT] = draft
+        pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+        if pub_id > 0:
+            update_publication_record(pub_id, auto_delete_minutes=minutes)
+        context.user_data.pop(_STATE, None)
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
     if state == _AWAIT_PUB_SCHEDULE:
         if not context.user_data.get(_PUB_PREVIEW_CONFIRMED):
             await update.message.reply_text("יש לפתוח תצוגה מקדימה לפני תזמון.")
             return
         raw = (update.message.text or "").strip()
-        try:
-            run_dt = datetime.strptime(raw, "%Y-%m-%d %H:%M")
-        except Exception:
-            await update.message.reply_text("פורמט לא תקין. השתמש: YYYY-MM-DD HH:MM")
+
+        now = datetime.utcnow()
+        recurring_plan = _parse_manual_recurrence(raw, now)
+        if recurring_plan is not None:
+            every_minutes = int(recurring_plan.get("repeat_every_minutes") or 0)
+            recurrence_type = recurring_plan.get("recurrence_type")
+            recurrence_weekdays = recurring_plan.get("recurrence_weekdays")
+            recurrence_day_of_month = recurring_plan.get("recurrence_day_of_month")
+            recurrence_time = recurring_plan.get("recurrence_time")
+            first_run_dt = recurring_plan.get("first_run_dt")
+            if every_minutes <= 0 or not isinstance(first_run_dt, datetime):
+                await update.message.reply_text("⚠️ תזמון מחזורי לא תקין. נסה שוב.")
+                return
+            draft = context.user_data.get(_PUB_DRAFT) or {}
+            payload = _build_send_payload_from_draft(draft)
+            first_run_at = first_run_dt.strftime("%Y-%m-%d %H:%M:%S")
+            edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+            if edit_pub_id > 0:
+                ok = update_publication_record(
+                    edit_pub_id,
+                    title=payload["title"],
+                    content_text=payload["content_text"],
+                    media_type=payload["media_type"],
+                    file_id=payload["file_id"],
+                    target_type=payload["target_type"],
+                    target_value=payload["target_value"],
+                    status="active",
+                    scheduled_at=first_run_at,
+                    is_recurring=1,
+                    repeat_every_minutes=every_minutes,
+                    recurrence_type=recurrence_type,
+                    recurrence_weekdays=recurrence_weekdays,
+                    recurrence_day_of_month=recurrence_day_of_month,
+                    recurrence_time=recurrence_time,
+                    next_run_at=first_run_at,
+                    auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+                )
+                if not ok:
+                    pub_id = 0
+                else:
+                    replace_publication_buttons_record(edit_pub_id, payload["buttons"])
+                    pub_id = edit_pub_id
+            else:
+                pub_id = create_publication_record(
+                    title=payload["title"],
+                    content_text=payload["content_text"],
+                    media_type=payload["media_type"],
+                    file_id=payload["file_id"],
+                    target_type=payload["target_type"],
+                    target_value=payload["target_value"],
+                    status="active",
+                    created_by=update.effective_user.id if update.effective_user else None,
+                    scheduled_at=first_run_at,
+                    is_recurring=1,
+                    repeat_every_minutes=every_minutes,
+                    recurrence_type=recurrence_type,
+                    recurrence_weekdays=recurrence_weekdays,
+                    recurrence_day_of_month=recurrence_day_of_month,
+                    recurrence_time=recurrence_time,
+                    next_run_at=first_run_at,
+                    auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+                    buttons=payload["buttons"],
+                )
+            if pub_id <= 0:
+                await update.message.reply_text("⚠️ שגיאה בשמירת מחזוריות. נסה שוב.")
+                return
+
+            await _schedule_recurring_job(context, pub_id, first_run_dt)
+            context.user_data.pop(_STATE, None)
+            await _clear_publication_preview_message(context)
+            _clear_publication_draft(context)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    "✅ הפרסום המחזורי נשמר בהצלחה\n"
+                    f"🕒 הפעלה ראשונה: {first_run_at}\n"
+                    f"🔁 תדירות: כל {every_minutes} דקות"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📄 פתח פרסום", callback_data=f"SUBS_PUB_VIEW_{pub_id}")],
+                    [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")],
+                ]),
+            )
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            return
+
+        run_dt = _parse_user_datetime(raw)
+        if run_dt is None:
+            await update.message.reply_text(
+                "פורמט לא תקין. השתמש באחד מאלה:\n"
+                "• YYYY-MM-DD HH:MM\n"
+                "• DD/MM/YYYY HH:MM\n"
+                "• כל יום HH:MM\n"
+                "• כל יום שישי HH:MM\n"
+                "• ימים שני,רביעי HH:MM\n"
+                "• כל חודש 15 18:00"
+            )
             return
 
         draft = context.user_data.get(_PUB_DRAFT) or {}
         payload = _build_send_payload_from_draft(draft)
-        pub_id = create_publication_record(
-            title=payload["title"],
-            content_text=payload["content_text"],
-            media_type=payload["media_type"],
-            file_id=payload["file_id"],
-            target_type=payload["target_type"],
-            target_value=payload["target_value"],
-            status="scheduled",
-            created_by=update.effective_user.id if update.effective_user else None,
-            scheduled_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            next_run_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            buttons=payload["buttons"],
-        )
+        run_at = run_dt.strftime("%Y-%m-%d %H:%M:%S")
+        edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
+        if edit_pub_id > 0:
+            ok = update_publication_record(
+                edit_pub_id,
+                title=payload["title"],
+                content_text=payload["content_text"],
+                media_type=payload["media_type"],
+                file_id=payload["file_id"],
+                target_type=payload["target_type"],
+                target_value=payload["target_value"],
+                status="scheduled",
+                is_recurring=0,
+                repeat_every_minutes=None,
+                recurrence_type=None,
+                recurrence_weekdays=None,
+                recurrence_day_of_month=None,
+                recurrence_time=None,
+                scheduled_at=run_at,
+                next_run_at=run_at,
+                auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+            )
+            if not ok:
+                pub_id = 0
+            else:
+                replace_publication_buttons_record(edit_pub_id, payload["buttons"])
+                pub_id = edit_pub_id
+        else:
+            pub_id = create_publication_record(
+                title=payload["title"],
+                content_text=payload["content_text"],
+                media_type=payload["media_type"],
+                file_id=payload["file_id"],
+                target_type=payload["target_type"],
+                target_value=payload["target_value"],
+                status="scheduled",
+                created_by=update.effective_user.id if update.effective_user else None,
+                scheduled_at=run_at,
+                next_run_at=run_at,
+                auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
+                buttons=payload["buttons"],
+            )
         if pub_id <= 0:
             await update.message.reply_text("⚠️ שגיאה בשמירת תזמון. נסה שוב.")
             return
