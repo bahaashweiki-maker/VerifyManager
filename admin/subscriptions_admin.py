@@ -1212,6 +1212,9 @@ async def _do_suspend(update: Update, context: ContextTypes.DEFAULT_TYPE, data: 
                         "🙏 אם יש לך שאלה או אם לדעתך מדובר בטעות, ניתן ליצור קשר עם הנהלת הבוט.\n\n"
                         "תודה על הסבלנות ושיתוף הפעולה. 💙"
                     ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                    ]),
                 )
             except Exception:
                 pass

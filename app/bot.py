@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -70,6 +70,18 @@ async def _reject_if_suspended(update: Update, context: ContextTypes.DEFAULT_TYP
     uid = user.id
     try:
         if is_suspended(uid):
+            callback_data = getattr(getattr(update, "callback_query", None), "data", None)
+            if isinstance(callback_data, str) and (
+                callback_data == "CONTACT"
+                or
+                callback_data == "pub:user:contact"
+                or callback_data.startswith("pub:user:contactcat:")
+            ):
+                return False
+
+            if context.user_data.get("user_contact_state") == "awaiting_contact_text":
+                return False
+
             susp = get_active_suspension(uid)
             until = susp.get("suspended_until") if susp else None
             if until:
@@ -92,6 +104,16 @@ async def _reject_if_suspended(update: Update, context: ContextTypes.DEFAULT_TYP
                     await update.callback_query.message.delete()
                 except Exception:
                     pass
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.callback_query.message.chat_id,
+                        text=text,
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                        ]),
+                    )
+                except Exception:
+                    pass
             else:
                 chat_id = None
                 if getattr(update, 'effective_chat', None):
@@ -100,7 +122,13 @@ async def _reject_if_suspended(update: Update, context: ContextTypes.DEFAULT_TYP
                     chat_id = update.message.chat_id
                 if chat_id:
                     try:
-                        await context.bot.send_message(chat_id, text)
+                        await context.bot.send_message(
+                            chat_id,
+                            text,
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                            ]),
+                        )
                     except Exception:
                         pass
             return True
@@ -137,6 +165,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data  = query.data
     # No debug prints during normal operation
+
+    # Legacy contact callback compatibility
+    if data == "CONTACT":
+        query.data = "pub:user:contact"
+        return await handle_user_nav(update, context)
 
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):

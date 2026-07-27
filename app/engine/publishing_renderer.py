@@ -39,6 +39,7 @@ from services.subscriber_chat_service import (
     open_subscriber_chat,
     get_open_subscriber_chat,
     add_subscriber_chat_message,
+    get_subscriber_chat_history,
 )
 from services.verified_users_service import (
     get_auto_catalogs_for_user,
@@ -80,6 +81,32 @@ _CONTACT_CATEGORIES: dict[str, str] = {
     "question": "❓ שאלה",
     "bug": "🆘 דיווח על תקלה",
 }
+
+
+def _is_contact_request_text(message_text: str) -> bool:
+    if not message_text:
+        return False
+    for label in _CONTACT_CATEGORIES.values():
+        if message_text.startswith(f"{label}\n"):
+            return True
+    return False
+
+
+def _has_pending_contact_request(messages: list[dict]) -> bool:
+    """True when the newest relevant message indicates a waiting contact request.
+
+    Relevant messages are:
+    - subscriber messages that match contact-request format
+    - admin replies in the same chat
+    """
+    for m in reversed(messages):
+        role = m.get("sender_role")
+        text = m.get("message_text") or ""
+        if role == "admin":
+            return False
+        if role == "subscriber" and _is_contact_request_text(text):
+            return True
+    return False
 
 
 def _contact_categories_keyboard() -> InlineKeyboardMarkup:
@@ -731,7 +758,25 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         subscriber = register_or_touch_subscriber(query.from_user)
         subscriber_id = int(subscriber["id"])
         open_chat = get_open_subscriber_chat(subscriber_id)
-        subscriber_chat_id = int(open_chat["id"]) if open_chat else int(open_subscriber_chat(subscriber_id, ADMIN_ID))
+        subscriber_chat_id = 0
+
+        if open_chat:
+            subscriber_chat_id = int(open_chat["id"])
+            has_open_contact_request = False
+            try:
+                messages = get_subscriber_chat_history(subscriber_chat_id)
+                has_open_contact_request = _has_pending_contact_request(messages)
+            except Exception:
+                has_open_contact_request = False
+
+            if has_open_contact_request:
+                await bot.send_message(
+                    query.message.chat_id,
+                    "⏳ הבקשה שלך כבר בטיפול.\nאנא המתן למענה מהמנהל.",
+                )
+                return
+        else:
+            subscriber_chat_id = int(open_subscriber_chat(subscriber_id, ADMIN_ID))
 
         context.user_data[_CONTACT_SUBSCRIBER_ID_KEY] = subscriber_id
         context.user_data[_CONTACT_CHAT_ID_KEY] = subscriber_chat_id
