@@ -171,6 +171,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query.data = "pub:user:contact"
         return await handle_user_nav(update, context)
 
+    if data == "BOT_RESTART_START":
+        await query.answer()
+        return await start(update, context)
+
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):
         return await handle_user_nav(update, context)

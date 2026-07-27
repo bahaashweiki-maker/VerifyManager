@@ -1268,6 +1268,9 @@ async def _do_unsuspend(update: Update, context: ContextTypes.DEFAULT_TYPE, data
                         "🙌 ניתן להשתמש שוב בכל שירותי הבוט.\n\n"
                         "ברוכים השבים ואנו מאחלים לך המשך שימוש נעים! 💙"
                     ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚀 לחץ כאן להפעלת הבוט מחדש", callback_data="BOT_RESTART_START")],
+                    ]),
                 )
             except Exception:
                 pass
