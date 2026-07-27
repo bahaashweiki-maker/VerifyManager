@@ -1,8 +1,8 @@
 """
 admin/subscriptions_admin.py
 ----------------------------
-Standalone subscriptions module admin handler (stage 1 scaffold).
-All not-yet-implemented actions return "בקרוב" while screens and callbacks exist.
+מטפל ממשק הניהול של מודול המנויים.
+כל פעולה שעדיין לא יושמה מחזירה "בקרוב" כל עוד המסכים והקולבקים קיימים.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from services.subscribers_service import (
     get_subscriber_card,
     suspend_subscriber,
     unsuspend_subscriber,
-    remove_subscriber,
     track_subscriber_activity,
 )
 from services.subscriber_stats_service import (
@@ -181,25 +180,13 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         return await _show_personal_stats(update, data)
 
     if data.startswith("SUBS_SUSPEND_DO_"):
-        return await _do_suspend(update, data)
+        return await _do_suspend(update, context, data)
 
     if data.startswith("SUBS_UNSUSPEND_DO_"):
-        return await _do_unsuspend(update, data)
+        return await _do_unsuspend(update, context, data)
 
     if data.startswith("SUBS_SUSPEND_"):
         return await _show_suspend_menu(update, data)
-
-    if data.startswith("SUBS_REMOVE_CONFIRM_"):
-        return await _confirm_remove_subscriber(update, data)
-
-    if data.startswith("SUBS_REMOVE_DO_"):
-        return await _do_remove_subscriber(update, context, data)
-
-    if data.startswith("SUBS_REMOVE_"):
-        return await _confirm_remove_subscriber(
-            update,
-            data.replace("SUBS_REMOVE_", "SUBS_REMOVE_CONFIRM_", 1),
-        )
 
     if data == "SUBS_PUB_MENU":
         return await _show_publications_menu(update)
@@ -319,8 +306,8 @@ async def _show_subscriber_card(
     text = (
         f"👤 <b>כרטיס מנוי</b>\n\n"
         f"שם: <b>{display_name}</b>\n"
-        f"ID: <code>{s['telegram_id']}</code>\n"
-        f"סטטוס: <b>{s.get('status', 'active')}</b>\n\n"
+        f"מזהה: <code>{s['telegram_id']}</code>\n"
+        f"סטטוס: <b>{_subscriber_status_label(s.get('status'))}</b>\n\n"
         f"📅 תאריך הצטרפות: {_fmt_dt(stats.get('joined_at'))}\n"
         f"🚪 כניסה ראשונה: {_fmt_dt(stats.get('first_seen_at'))}\n"
         f"⏱️ כניסה אחרונה: {_fmt_dt(stats.get('last_seen_at'))}\n"
@@ -336,7 +323,6 @@ async def _show_subscriber_card(
         [InlineKeyboardButton("📜 היסטוריית שיחות", callback_data=f"SUBS_CHAT_HISTORY_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("📊 סטטיסטיקה אישית", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⛔ השעיית מנוי", callback_data=f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")],
-        [InlineKeyboardButton("🗑️ הסרת מנוי", callback_data=f"SUBS_REMOVE_CONFIRM_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⬅️ חזרה", callback_data=back_cb)],
     ])
 
@@ -620,6 +606,14 @@ def _fmt_dt(ts) -> str:
         return f"{ts[8:10]}.{ts[5:7]}.{ts[:4]} {ts[11:16]}"
     except Exception:
         return str(ts)
+
+
+def _subscriber_status_label(status: str | None) -> str:
+    return {
+        "active": "פעיל",
+        "suspended": "מושעה",
+        "blocked": "חסום",
+    }.get((status or "").lower(), "לא ידוע")
 
 
 def _pack_media_meta(media_type: str, caption: str | None) -> str:
@@ -1199,54 +1193,53 @@ async def _show_suspend_menu(update: Update, data: str) -> None:
     await _safe_query_edit(update, text=text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="HTML")
 
 
-async def _do_suspend(update: Update, data: str) -> None:
+async def _do_suspend(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     payload = _parse_card_payload(data, "SUBS_SUSPEND_DO_")
     if payload is None:
         return await _invalid_callback(update)
     origin, page, subscriber_id = payload
     ok = suspend_subscriber(subscriber_id, performed_by=update.callback_query.from_user.id)
     await update.callback_query.answer("✅ המנוי הושעה." if ok else "❌ לא ניתן להשעות.", show_alert=not ok)
+    if ok:
+        subscriber = get_subscriber_card(subscriber_id)
+        if subscriber:
+            try:
+                await context.bot.send_message(
+                    chat_id=subscriber["telegram_id"],
+                    text=(
+                        "🚫 החשבון שלך הושעה זמנית על ידי הנהלת הבוט.\n\n"
+                        "🔒 החשבון נמצא בבדיקה ולכן הגישה לשירותי הבוט הושהתה באופן זמני.\n\n"
+                        "🙏 אם יש לך שאלה או אם לדעתך מדובר בטעות, ניתן ליצור קשר עם הנהלת הבוט.\n\n"
+                        "תודה על הסבלנות ושיתוף הפעולה. 💙"
+                    ),
+                )
+            except Exception:
+                pass
     await _show_suspend_menu(update, f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")
 
 
-async def _do_unsuspend(update: Update, data: str) -> None:
+async def _do_unsuspend(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     payload = _parse_card_payload(data, "SUBS_UNSUSPEND_DO_")
     if payload is None:
         return await _invalid_callback(update)
     origin, page, subscriber_id = payload
     ok = unsuspend_subscriber(subscriber_id, performed_by=update.callback_query.from_user.id)
     await update.callback_query.answer("✅ ההשעיה בוטלה." if ok else "❌ לא ניתן לבטל השעיה.", show_alert=not ok)
+    if ok:
+        subscriber = get_subscriber_card(subscriber_id)
+        if subscriber:
+            try:
+                await context.bot.send_message(
+                    chat_id=subscriber["telegram_id"],
+                    text=(
+                        "🎉 החשבון שלך שוחרר מההשעיה!\n\n"
+                        "🙌 ניתן להשתמש שוב בכל שירותי הבוט.\n\n"
+                        "ברוכים השבים ואנו מאחלים לך המשך שימוש נעים! 💙"
+                    ),
+                )
+            except Exception:
+                pass
     await _show_suspend_menu(update, f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")
-
-
-async def _confirm_remove_subscriber(update: Update, data: str) -> None:
-    payload = _parse_card_payload(data, "SUBS_REMOVE_CONFIRM_")
-    if payload is None:
-        return await _invalid_callback(update)
-    origin, page, subscriber_id = payload
-    await _safe_query_edit(
-        update,
-        text="🗑️ האם למחוק את המנוי מטבלת subscribers?",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ כן", callback_data=f"SUBS_REMOVE_DO_{origin}_{page}_{subscriber_id}")],
-            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
-        ]),
-        parse_mode="HTML",
-    )
-
-
-async def _do_remove_subscriber(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
-    payload = _parse_card_payload(data, "SUBS_REMOVE_DO_")
-    if payload is None:
-        return await _invalid_callback(update)
-    origin, page, subscriber_id = payload
-    ok = remove_subscriber(subscriber_id)
-    await update.callback_query.answer("✅ המנוי נמחק." if ok else "❌ מחיקה נכשלה.", show_alert=not ok)
-    back_cb = _card_back_callback(origin, page)
-    if back_cb.startswith("SUBS_LIST_PAGE_"):
-        await _show_subscribers_list(update, int(back_cb.split("_")[-1]))
-    else:
-        await _show_search_results(update, context, int(back_cb.split("_")[-1]))
 
 
 async def _show_stats(update: Update) -> None:

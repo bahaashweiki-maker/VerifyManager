@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from datetime import datetime
 
 from telegram import (
     Bot,
@@ -28,6 +29,16 @@ from repositories.pub_button_repository import (
     pub_get_buttons_for_home,
     pub_get_buttons_for_page,
     pub_get_button_by_id,
+)
+from config.constants import ADMIN_ID
+from services.subscribers_service import (
+    register_or_touch_subscriber,
+    track_subscriber_activity,
+)
+from services.subscriber_chat_service import (
+    open_subscriber_chat,
+    get_open_subscriber_chat,
+    add_subscriber_chat_message,
 )
 from services.verified_users_service import (
     get_auto_catalogs_for_user,
@@ -54,7 +65,150 @@ _last_home_msg: dict[int, int] = {}
 
 _SYSTEM_BUTTONS: list[list[InlineKeyboardButton]] = [
     [InlineKeyboardButton("🪪 שלח אימות", callback_data="START_VERIFY")],
+    [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
 ]
+
+_CONTACT_STATE_KEY = "user_contact_state"
+_CONTACT_CATEGORY_KEY = "user_contact_category"
+_CONTACT_SUBSCRIBER_ID_KEY = "user_contact_subscriber_id"
+_CONTACT_CHAT_ID_KEY = "user_contact_chat_id"
+
+_CONTACT_CATEGORIES: dict[str, str] = {
+    "general": "💬 פנייה כללית",
+    "complaint": "⚠️ תלונה",
+    "suggestion": "💡 הצעה",
+    "question": "❓ שאלה",
+    "bug": "🆘 דיווח על תקלה",
+}
+
+
+def _contact_categories_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 פנייה כללית", callback_data="pub:user:contactcat:general")],
+        [InlineKeyboardButton("⚠️ תלונה", callback_data="pub:user:contactcat:complaint")],
+        [InlineKeyboardButton("💡 הצעה", callback_data="pub:user:contactcat:suggestion")],
+        [InlineKeyboardButton("❓ שאלה", callback_data="pub:user:contactcat:question")],
+        [InlineKeyboardButton("🆘 דיווח על תקלה", callback_data="pub:user:contactcat:bug")],
+        [InlineKeyboardButton("⬅️ חזרה", callback_data="pub:user:home")],
+    ])
+
+
+async def _notify_admin_contact_open(
+    bot: Bot,
+    user,
+    subscriber_id: int,
+    chat_id: int,
+) -> None:
+    username_line = f"👤 Username: @{user.username}\n" if user.username else ""
+    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+    await bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "📞 <b>נפתחה בקשת צור קשר חדשה</b>\n\n"
+            f"👤 שם: <b>{user.full_name}</b>\n"
+            f"{username_line}"
+            f"🆔 Telegram ID: <code>{user.id}</code>\n"
+            f"🕒 תאריך ושעה: <b>{ts}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 פתח שיחה", callback_data=f"SUBS_CHAT_OPEN_{subscriber_id}_{chat_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _notify_admin_contact_message(
+    bot: Bot,
+    user,
+    subscriber_id: int,
+    chat_id: int,
+    category_label: str,
+    content: str,
+) -> None:
+    username_line = f"👤 Username: @{user.username}\n" if user.username else ""
+    await bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "📩 <b>התקבלה פנייה חדשה ממשתמש</b>\n\n"
+            f"👤 שם: <b>{user.full_name}</b>\n"
+            f"{username_line}"
+            f"🆔 Telegram ID: <code>{user.id}</code>\n"
+            f"🏷️ סוג פנייה: <b>{category_label}</b>\n"
+            f"💬 תוכן הפנייה:\n{content}"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 פתח שיחה", callback_data=f"SUBS_CHAT_OPEN_{subscriber_id}_{chat_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def handle_contact_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    state = context.user_data.get(_CONTACT_STATE_KEY)
+    if state != "awaiting_contact_text":
+        return False
+
+    if not update.message or not update.effective_user:
+        return False
+
+    content = (update.message.text or "").strip()
+    if not content:
+        await update.message.reply_text("✍️ אנא כתוב את תוכן הפנייה בהודעת טקסט.")
+        return True
+
+    subscriber_id = int(context.user_data.get(_CONTACT_SUBSCRIBER_ID_KEY) or 0)
+    chat_id = int(context.user_data.get(_CONTACT_CHAT_ID_KEY) or 0)
+    category_key = str(context.user_data.get(_CONTACT_CATEGORY_KEY) or "general")
+    category_label = _CONTACT_CATEGORIES.get(category_key, _CONTACT_CATEGORIES["general"])
+
+    if subscriber_id <= 0:
+        subscriber = register_or_touch_subscriber(update.effective_user)
+        subscriber_id = int(subscriber["id"])
+    if chat_id <= 0:
+        open_chat = get_open_subscriber_chat(subscriber_id)
+        chat_id = int(open_chat["id"]) if open_chat else int(open_subscriber_chat(subscriber_id, ADMIN_ID))
+
+    add_subscriber_chat_message(
+        chat_id=chat_id,
+        sender_role="subscriber",
+        sender_id=update.effective_user.id,
+        message_text=f"{category_label}\n{content}",
+    )
+
+    try:
+        track_subscriber_activity(
+            subscriber_id=subscriber_id,
+            event_key="contact_request",
+            payload=category_key,
+            increment_basic_activity=True,
+        )
+    except Exception:
+        pass
+
+    try:
+        await _notify_admin_contact_message(
+            context.bot,
+            update.effective_user,
+            subscriber_id,
+            chat_id,
+            category_label,
+            content,
+        )
+    except Exception:
+        pass
+
+    context.user_data.pop(_CONTACT_STATE_KEY, None)
+    context.user_data.pop(_CONTACT_CATEGORY_KEY, None)
+    context.user_data.pop(_CONTACT_SUBSCRIBER_ID_KEY, None)
+    context.user_data.pop(_CONTACT_CHAT_ID_KEY, None)
+
+    await update.message.reply_text(
+        "✅ הפנייה נשלחה בהצלחה. צוות ההנהלה יחזור אליך בהקדם.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="pub:user:home")],
+        ]),
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +726,45 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif action == "page" and len(parts) > 3:
         await render_page(bot, chat_id, int(parts[3]), telegram_id=query.from_user.id)
+
+    elif action == "contact":
+        subscriber = register_or_touch_subscriber(query.from_user)
+        subscriber_id = int(subscriber["id"])
+        open_chat = get_open_subscriber_chat(subscriber_id)
+        subscriber_chat_id = int(open_chat["id"]) if open_chat else int(open_subscriber_chat(subscriber_id, ADMIN_ID))
+
+        context.user_data[_CONTACT_SUBSCRIBER_ID_KEY] = subscriber_id
+        context.user_data[_CONTACT_CHAT_ID_KEY] = subscriber_chat_id
+
+        try:
+            await _notify_admin_contact_open(bot, query.from_user, subscriber_id, subscriber_chat_id)
+        except Exception:
+            pass
+
+        await bot.send_message(
+            query.message.chat_id,
+            "📞 <b>צור קשר</b>\n\nבחר סוג פנייה:",
+            reply_markup=_contact_categories_keyboard(),
+            parse_mode="HTML",
+        )
+
+    elif action == "contactcat" and len(parts) > 3:
+        category_key = parts[3]
+        category_label = _CONTACT_CATEGORIES.get(category_key)
+        if not category_label:
+            await bot.send_message(chat_id, "⚠️ סוג פנייה לא תקין. נסה שוב.")
+            return
+
+        context.user_data[_CONTACT_STATE_KEY] = "awaiting_contact_text"
+        context.user_data[_CONTACT_CATEGORY_KEY] = category_key
+
+        await bot.send_message(
+            chat_id,
+            (
+                f"{category_label}\n\n"
+                "✍️ נא לכתוב עכשיו את תוכן הפנייה שלך בהודעה אחת."
+            ),
+        )
 
     elif action == "msg" and len(parts) > 3:
         btn = pub_get_button_by_id(int(parts[3]))

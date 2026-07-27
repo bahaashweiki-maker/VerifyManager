@@ -16,7 +16,7 @@ from services.verify_service import (
 )
 
 from app.engine.page_engine import PageEngine
-from app.engine.publishing_renderer import render_home, handle_user_nav
+from app.engine.publishing_renderer import render_home, handle_user_nav, handle_contact_input
 from datetime import datetime
 from services.verified_users_service import is_suspended, get_active_suspension
 
@@ -291,6 +291,14 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         try:
             handled = await handle_verification_chat_user_message(update, context)
+            if handled:
+                return
+        except Exception:
+            pass
+    # קלט מודול "צור קשר" למשתמשים
+    if update.message:
+        try:
+            handled = await handle_contact_input(update, context)
             if handled:
                 return
         except Exception:
