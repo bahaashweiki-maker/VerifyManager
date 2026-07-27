@@ -145,6 +145,8 @@ def add_subscriber_activity_event(
 
 def search_subscribers(term: str, limit: int = 50) -> list:
     pattern = f"%{term}%"
+    username_term = term[1:] if term.startswith("@") else term
+    username_pattern = f"%{username_term}%"
     with get_connection() as conn:
         conn.row_factory = _row_factory
         cur = conn.execute(
@@ -154,16 +156,19 @@ def search_subscribers(term: str, limit: int = 50) -> list:
             WHERE CAST(telegram_id AS TEXT) LIKE ?
                OR COALESCE(full_name, '') LIKE ?
                OR COALESCE(username, '') LIKE ?
+               OR COALESCE(username, '') LIKE ?
             ORDER BY joined_at DESC, id DESC
             LIMIT ?
             """,
-            (pattern, pattern, pattern, limit),
+            (pattern, pattern, pattern, username_pattern, limit),
         )
         return cur.fetchall()
 
 
 def search_subscribers_page(term: str, page: int, per_page: int = 10) -> list:
     pattern = f"%{term}%"
+    username_term = term[1:] if term.startswith("@") else term
+    username_pattern = f"%{username_term}%"
     offset = max(page, 1)
     offset = (offset - 1) * per_page
     with get_connection() as conn:
@@ -175,16 +180,19 @@ def search_subscribers_page(term: str, page: int, per_page: int = 10) -> list:
             WHERE CAST(telegram_id AS TEXT) LIKE ?
                OR COALESCE(full_name, '') LIKE ?
                OR COALESCE(username, '') LIKE ?
+               OR COALESCE(username, '') LIKE ?
             ORDER BY joined_at DESC, id DESC
             LIMIT ? OFFSET ?
             """,
-            (pattern, pattern, pattern, per_page, offset),
+            (pattern, pattern, pattern, username_pattern, per_page, offset),
         )
         return cur.fetchall()
 
 
 def count_subscribers_search(term: str) -> int:
     pattern = f"%{term}%"
+    username_term = term[1:] if term.startswith("@") else term
+    username_pattern = f"%{username_term}%"
     with get_connection() as conn:
         cur = conn.execute(
             """
@@ -193,8 +201,9 @@ def count_subscribers_search(term: str) -> int:
             WHERE CAST(telegram_id AS TEXT) LIKE ?
                OR COALESCE(full_name, '') LIKE ?
                OR COALESCE(username, '') LIKE ?
+               OR COALESCE(username, '') LIKE ?
             """,
-            (pattern, pattern, pattern),
+            (pattern, pattern, pattern, username_pattern),
         )
         return int(cur.fetchone()[0])
 
