@@ -802,6 +802,10 @@ def build_publishing_handler(
                 return S_BTN_VIEW
             pub_update_button_type(btn_id, "page_link")
             pub_update_button_target_page(btn_id, new_page_id)
+            # מנקים value ישן — אותה סיבה כמו ב-cb_btn_set_target: כפתור
+            # page_link לא אמור להחזיק ערך טקסט חופשי, וזה מונע מצב שבו
+            # value ישן (מכפתור שהיה למשל מסוג text) נשאר "תקוע" בשקט.
+            pub_update_button_value(btn_id, "")
             target_page_id = new_page_id
 
         context.user_data.update({_K_OWNER_TYPE: "page", _K_OWNER_ID: target_page_id})
