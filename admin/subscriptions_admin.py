@@ -1479,19 +1479,47 @@ async def _show_publications_list(update: Update, context: ContextTypes.DEFAULT_
         content_text = (p.get("content_text") or "").strip()
         content_preview = " ".join(content_text.split())[:52]
         media_type = str(p.get("media_type") or "").strip()
-        media_fallback = f"פרסום מדיה ({media_type})" if media_type else "פרסום ללא כותרת"
+        media_label = {
+            "photo": "תמונה",
+            "video": "וידאו",
+            "animation": "אנימציה",
+            "document": "מסמך",
+            "audio": "אודיו",
+            "voice": "הודעה קולית",
+            "video_note": "סרטון עגול",
+            "sticker": "סטיקר",
+        }.get(media_type, "מדיה") if media_type else ""
+        media_fallback = media_label if media_type else ""
         list_index = ((page - 1) * per_page) + idx
         normalized_title = "" if raw_title in {"פרסום", "פרסום ללא כותרת"} else raw_title
+        target_type = str(p.get("target_type") or "all")
+        target_value = p.get("target_value")
+        target_short = {
+            "all": "לכולם",
+            "verified": "למאומתים",
+            "active": "לפעילים",
+            "trial": "בניסיון",
+        }.get(target_type, "מותאם")
+        if target_type == "permission" and target_value:
+            target_short = f"הרשאה {target_value}"
+        elif target_type == "subscriber" and target_value:
+            target_short = f"משתמש {target_value}"
         target = _publication_target_label(str(p.get("target_type") or "all"), p.get("target_value"))
         next_run = _fmt_iso(str(p.get("next_run_at") or ""))
         last_sent = _fmt_iso(str(p.get("last_sent_at") or ""))
-        identity = normalized_title or content_preview or media_fallback
+        display_name = normalized_title or content_preview or f"פרסום {list_index}"
+        identity = f"{display_name} · {media_fallback}" if media_fallback else display_name
         lines.append(
             f"{list_index}. <b>{identity[:52]}</b> | {status}\n"
             f"יעד: {target} | שליחה הבאה: {next_run} | שליחה אחרונה: {last_sent}"
         )
-        button_title = normalized_title or content_preview or media_fallback
-        rows.append([InlineKeyboardButton(f"📄 פרסום {list_index} · {button_title[:24]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
+        button_name = display_name[:14]
+        if media_fallback:
+            button_title = f"{button_name} · {media_fallback}"
+        else:
+            button_title = button_name
+        button_prefix = "" if button_name == f"פרסום {list_index}" else f"פרסום {list_index} · "
+        rows.append([InlineKeyboardButton(f"📄 {button_prefix}{button_title} · {target_short[:10]}", callback_data=f"SUBS_PUB_VIEW_{p['id']}")])
 
     if not rows_data:
         lines.append("אין פרסומים להצגה.")

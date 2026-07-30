@@ -282,6 +282,17 @@ def pub_delete_page(page_id: int) -> bool:
     """
     מוחק עמוד וכל עמודי-הבן והכפתורים שלו (CASCADE).
 
+    בנוסף: כל כפתור מסוג page_link בכל מקום במערכת שמצביע לעמוד הזה
+    כ-target (target_page_id = page_id) מנוקה במפורש — גם target_page_id
+    וגם value מתאפסים, באותה טרנזקציה של המחיקה. זה קורה בפועל *לפני*
+    ה-DELETE, ולא מסתמך רק על ON DELETE SET NULL ברמת ה-FK: אם רק
+    target_page_id היה מתאפס בלי לנקות גם את value, ערך ישן ש"נדבק"
+    לכפתור page_link (למשל משינוי סוג כפתור בעבר) יכול היה לדלוף
+    ל-callback_data דרך מנגנון הנפילה-לאחור שהיה קיים ב-
+    publishing_renderer.py (_db_btn_to_tg) — זה בדיוק מה שגרם ל-
+    Button_data_invalid. הניקוי כאן מבטיח שגם בלי להסתמך על אותה
+    הגנה, הנתונים עצמם לא יכולים להישאר פגומים.
+
     PRAGMA foreign_keys=ON נדרש — מופעל ב-get_connection().
 
     Returns:
@@ -289,13 +300,22 @@ def pub_delete_page(page_id: int) -> bool:
     """
     try:
         with get_connection() as conn:
+            conn.execute(
+                "UPDATE publishing_buttons"
+                " SET target_page_id = NULL, value = '', updated_at = CURRENT_TIMESTAMP"
+                " WHERE target_page_id = ?",
+                (page_id,),
+            )
             cur = conn.execute(
                 "DELETE FROM publishing_pages WHERE id = ?", (page_id,)
             )
             conn.commit()
             deleted = cur.rowcount > 0
         if deleted:
-            logger.info("pub_delete_page: deleted id=%d (cascade)", page_id)
+            logger.info(
+                "pub_delete_page: deleted id=%d (cascade + page_link target cleanup)",
+                page_id,
+            )
         else:
             logger.warning("pub_delete_page: id=%d not found", page_id)
         return deleted
@@ -384,4 +404,3 @@ def _swap_sort_order(page_id: int, direction: str) -> bool:
     except sqlite3.Error as exc:
         logger.error("_swap_sort_order(%d, %s) failed: %s", page_id, direction, exc, exc_info=True)
         return False
-

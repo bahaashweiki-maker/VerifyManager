@@ -262,8 +262,38 @@ def _db_btn_to_tg(btn) -> Optional[InlineKeyboardButton]:
             return InlineKeyboardButton(label, url=value)
 
         elif btype == "page_link":
-            target = btn["target_page_id"] or value
-            return InlineKeyboardButton(label, callback_data=f"pub:user:page:{target}")
+            # שורש הבאג ההיסטורי: פעם הייתה כאן נפילה-לאחור ל-`value`
+            # (`target = btn["target_page_id"] or value`) שיכלה לחשוף טקסט
+            # ישן/ארוך שנשאר תקוע בעמודת value לתוך ה-callback_data.
+            # כעת: page_link מציית *רק* ל-target_page_id. אם הוא חסר,
+            # או מצביע לעמוד שלא קיים, או שה-callback_data שייווצר חורג
+            # ממגבלת טלגרם (64 בתים) — הכפתור מושמט לגמרי במקום לקרוס.
+            target = btn["target_page_id"]
+            if not target:
+                logger.warning(
+                    "Button %d (page_link, label='%s') has no target_page_id — "
+                    "omitting from keyboard", btn["id"], label,
+                )
+                return None
+
+            target_page = pub_get_page_by_id(target)
+            if target_page is None:
+                logger.warning(
+                    "Button %d (page_link, label='%s') target_page_id=%s does not "
+                    "exist — omitting from keyboard", btn["id"], label, target,
+                )
+                return None
+
+            callback_data = f"pub:user:page:{target}"
+            if len(callback_data) > 64:
+                logger.warning(
+                    "Button %d (page_link, label='%s') callback_data exceeds 64 "
+                    "chars (%d) — omitting from keyboard",
+                    btn["id"], label, len(callback_data),
+                )
+                return None
+
+            return InlineKeyboardButton(label, callback_data=callback_data)
 
         elif btype in ("phone", "email"):
             return InlineKeyboardButton(label, callback_data=f"pub:user:msg:{btn['id']}")

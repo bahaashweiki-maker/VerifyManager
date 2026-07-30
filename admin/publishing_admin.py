@@ -861,6 +861,10 @@ def build_publishing_handler(
         if btn_id:
             pub_update_button_type(btn_id, "page_link")
             pub_update_button_target_page(btn_id, target_id)
+            # מנקים value ישן — כפתור page_link לא אמור להחזיק ערך טקסט חופשי,
+            # וזה מונע "דליפה" של value ישן ל-callback_data אם target_page_id
+            # יתאפס בעתיד (ראה _db_btn_to_tg).
+            pub_update_button_value(btn_id, "")
             await update.callback_query.edit_message_text(
                 f"✅ עמוד יעד עודכן: <b>{page_title}</b>",
                 parse_mode="HTML",
@@ -897,6 +901,19 @@ def build_publishing_handler(
         await answer_query(update)
         btn_id = int(parse_cb(update.callback_query.data)[2])
         context.user_data[_K_BTN_ID] = btn_id
+
+        btn = pub_get_button_by_id(btn_id)
+        if btn is not None and btn["button_type"] == "page_link":
+            # לכפתור page_link אין "ערך" חופשי לעריכה — יש רק עמוד יעד.
+            # זה בדיוק המסלול שדרכו נכנס בעבר טקסט ארוך ל-value של כפתור
+            # ניווט (btn 118/126). מפנים לבורר עמוד יעד במקום לבקש טקסט.
+            pages = pub_get_all_pages()
+            await update.callback_query.edit_message_text(
+                "כפתור זה הוא כפתור ניווט לעמוד — בחר עמוד יעד חדש:",
+                reply_markup=kb_select_target_page(pages, btn_id),
+            )
+            return S_BTN_SELECT_PAGE
+
         await update.callback_query.edit_message_text(
             "שלח ערך חדש:",
             reply_markup=kb_wait_input(cb("btn", "view", btn_id)),
@@ -1042,6 +1059,15 @@ def build_publishing_handler(
         value  = (update.message.text or "").strip()
         btn_id = context.user_data.get(_K_BTN_ID)
         if btn_id:
+            # הגנה כפולה: כפתור page_link לעולם לא שומר טקסט חופשי ב-value,
+            # גם אם משהו הגיע למצב הזה בעקיפין (לא אמור לקרות בזרימה הרגילה).
+            existing = pub_get_button_by_id(btn_id)
+            if existing is not None and existing["button_type"] == "page_link":
+                await update.message.reply_text(
+                    "⚠️ כפתור זה הוא כפתור ניווט לעמוד. "
+                    "יש לבחור עמוד יעד דרך 'ערוך ערך'."
+                )
+                return await _send_btn(update, context, btn_id)
             pub_update_button_value(btn_id, value)
             await update.message.reply_text("עודכן.")
             return await _send_btn(update, context, btn_id)
