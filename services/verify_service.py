@@ -7,7 +7,7 @@ import random
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from database.database import create_verification
+from database.database import create_verification, now_il
 from app.engine.publishing_renderer import render_home
 from services.verify_admin_service import get_latest_verification_by_telegram_id
 
@@ -426,7 +426,7 @@ async def send_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, stat
         ]
     ])
     
-    now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    now = now_il()
     print(now)
     print(now.tzinfo)
     text = (

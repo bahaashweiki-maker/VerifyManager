@@ -33,6 +33,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config.permissions import PERMISSIONS
+from database.database import now_il
 from services.admin_service import (
     promote_to_admin,
     demote_admin,
@@ -526,7 +527,7 @@ def _actor_name(update: Update) -> str:
 
 
 def _now_date_time() -> tuple[str, str]:
-    now = datetime.now()
+    now = now_il()
     return now.strftime("%d.%m.%Y"), now.strftime("%H:%M")
 
 

@@ -53,11 +53,13 @@ state ב-context.user_data:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config.user_permissions import USER_PERMISSIONS
+from database.database import IL_TZ
 from services.verified_users_service import (
     # משתמש
     get_all_verified_users,
@@ -1773,18 +1775,26 @@ def _fmt_date(ts) -> str:
     if not ts:
         return "-"
     try:
-        return f"{ts[8:10]}.{ts[5:7]}.{ts[:4]}"
+        dt = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=IL_TZ)
+        return dt.strftime("%d.%m.%Y")
     except Exception:
-        return str(ts)
+        try:
+            return f"{ts[8:10]}.{ts[5:7]}.{ts[:4]}"
+        except Exception:
+            return str(ts)
 
 
 def _fmt_time(ts) -> str:
     if not ts:
         return "-"
     try:
-        return ts[11:16]
+        dt = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=IL_TZ)
+        return dt.strftime("%H:%M")
     except Exception:
-        return "-"
+        try:
+            return ts[11:16]
+        except Exception:
+            return "-"
 
 
 def _fmt_datetime(ts) -> tuple[str, str]:

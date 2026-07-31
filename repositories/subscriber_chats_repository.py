@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from database.database import get_connection
+from database.database import get_connection, now_il
 
 
 def get_open_chat_for_subscriber(subscriber_id: int) -> Optional[dict]:
@@ -29,11 +29,12 @@ def create_subscriber_chat(subscriber_id: int, admin_id: int) -> int:
             INSERT INTO subscriber_admin_chats (
                 subscriber_id,
                 admin_id,
-                is_open
+                is_open,
+                created_at
             )
-            VALUES (?, ?, 1)
+            VALUES (?, ?, 1, ?)
             """,
-            (subscriber_id, admin_id),
+            (subscriber_id, admin_id, now_il().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -45,10 +46,10 @@ def close_subscriber_chat(chat_id: int) -> bool:
             """
             UPDATE subscriber_admin_chats
             SET is_open = 0,
-                closed_at = datetime('now')
+                closed_at = ?
             WHERE id = ?
             """,
-            (chat_id,),
+            (now_il().strftime("%Y-%m-%d %H:%M:%S"), chat_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -69,11 +70,12 @@ def add_chat_message(
                 sender_role,
                 sender_id,
                 message_text,
-                file_id
+                file_id,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (chat_id, sender_role, sender_id, message_text, file_id),
+            (chat_id, sender_role, sender_id, message_text, file_id, now_il().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.commit()
         return int(cur.lastrowid)

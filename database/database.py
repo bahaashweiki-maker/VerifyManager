@@ -50,6 +50,7 @@ __all__ = [
     "VALID_STATUSES",
     "DB_PATH",
     "DB_TIMEOUT",
+    "now_il",
     "get_connection",
     "create_tables",
     "run_migrations",
@@ -63,6 +64,36 @@ __all__ = [
     "update_verification_fields",
     "delete_verification",
 ]
+
+
+# -----------------------------------------------------------------------
+# זמן מרכזי — שעון ישראל
+# -----------------------------------------------------------------------
+# datetime.now() תלוי באזור הזמן של השרת (לרוב UTC ב-production),
+# ו-datetime.utcnow() מחזיר תמיד UTC — אף אחד מהם לא משקף את השעה
+# בישראל, וגם לא מתחשב במעבר שעון קיץ/חורף.
+#
+# כל קוד בפרויקט שיוצר או מציג תאריך/שעה (הודעות למשתמש, לוגים,
+# תזמונים, חישובי תפוגה וכו') אמור לקרוא ל-now_il() במקום לקרוא
+# ישירות ל-datetime.now() או ל-datetime.utcnow().
+#
+# שימוש:
+#     from database.database import now_il
+#     ts = now_il()
+#
+# הערה: זהו שלב 1 בלבד — יצירת הפונקציה המרכזית. אף שימוש קיים של
+# datetime.now()/datetime.utcnow() בפרויקט עדיין לא הוחלף.
+
+IL_TZ = ZoneInfo("Asia/Jerusalem")
+
+
+def now_il() -> datetime:
+    """
+    מחזיר datetime "מודע" לאזור זמן (timezone-aware), תמיד לפי השעה
+    הנוכחית בישראל (Asia/Jerusalem) — כולל מעבר אוטומטי בין שעון
+    חורף לשעון קיץ.
+    """
+    return datetime.now(IL_TZ)
 
 
 # -----------------------------------------------------------------------
@@ -232,7 +263,7 @@ def create_verification(
         ה-id של הרשומה החדשה שנוצרה, או -1 במקרה של כשל.
     """
     try:
-        now_il = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d %H:%M:%S")
+        created_at = now_il().strftime("%Y-%m-%d %H:%M:%S")
         with get_connection() as conn:
             cur = conn.execute(
                 """
@@ -240,7 +271,7 @@ def create_verification(
                     (telegram_id, full_name, username, id_photo, selfie, social, video, code, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (telegram_id, full_name, username, id_photo, selfie, social, video, code, now_il),
+                (telegram_id, full_name, username, id_photo, selfie, social, video, code, created_at),
             )
             conn.commit()
             new_id: int = cur.lastrowid  # type: ignore[assignment]

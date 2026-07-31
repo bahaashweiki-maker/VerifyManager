@@ -24,6 +24,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from repositories.home_repository import get_home
+from database.database import now_il
 from repositories.pub_page_repository import pub_get_page_by_id, pub_get_pages_by_parent
 from repositories.pub_button_repository import (
     pub_get_buttons_for_home,
@@ -127,7 +128,7 @@ async def _notify_admin_contact_open(
     chat_id: int,
 ) -> None:
     username_line = f"👤 Username: @{user.username}\n" if user.username else ""
-    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+    ts = now_il().strftime("%d.%m.%Y %H:%M")
     await bot.send_message(
         chat_id=ADMIN_ID,
         text=(

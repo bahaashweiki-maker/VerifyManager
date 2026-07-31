@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from database.database import get_connection
+from database.database import get_connection, now_il
 from services.permission_service import (
     get_user_permissions,
     grant_permission,
@@ -154,14 +154,14 @@ def set_user_type(
         with get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO user_type_assignments (telegram_id, type_key, assigned_by)
-                VALUES (?, ?, ?)
+                INSERT INTO user_type_assignments (telegram_id, type_key, assigned_by, assigned_at)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE
                     SET type_key    = excluded.type_key,
                         assigned_by = excluded.assigned_by,
-                        assigned_at = datetime('now')
+                        assigned_at = excluded.assigned_at
                 """,
-                (telegram_id, type_key, assigned_by),
+                (telegram_id, type_key, assigned_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
         return True
@@ -198,8 +198,8 @@ def revoke_verification(verification_id: int, performed_by: int = None) -> bool:
 
             telegram_id = row[0] if row else None
             conn.execute(
-                "UPDATE verifications SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (verification_id,),
+                "UPDATE verifications SET status = 'rejected', updated_at = ? WHERE id = ?",
+                (now_il().strftime("%Y-%m-%d %H:%M:%S"), verification_id),
             )
 
             # הסרת גישות שניתנו למשתמש מאומת:
@@ -280,9 +280,9 @@ def add_warning(telegram_id: int, reason: str, created_by: int = None) -> bool:
     try:
         with get_connection() as conn:
             conn.execute(
-                """INSERT INTO user_warnings (telegram_id, reason, created_by)
-                   VALUES (?, ?, ?)""",
-                (telegram_id, reason, created_by),
+                """INSERT INTO user_warnings (telegram_id, reason, created_by, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (telegram_id, reason, created_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
         return True
@@ -360,7 +360,7 @@ def suspend_user(
 ) -> bool:
     days  = _SUSPEND_DAYS.get(duration_key)
     until = (
-        (datetime.utcnow() + timedelta(days=days)).isoformat()
+        (now_il() + timedelta(days=days)).isoformat()
         if days is not None
         else None
     )
@@ -388,9 +388,9 @@ def lift_suspension(telegram_id: int) -> bool:
         with get_connection() as conn:
             conn.execute(
                 """UPDATE user_suspensions
-                   SET is_active = 0, lifted_at = datetime('now')
+                   SET is_active = 0, lifted_at = ?
                    WHERE telegram_id = ? AND is_active = 1""",
-                (telegram_id,),
+                (now_il().strftime("%Y-%m-%d %H:%M:%S"), telegram_id),
             )
             conn.commit()
         return True
@@ -414,7 +414,13 @@ def get_active_suspension(telegram_id: int) -> Optional[dict]:
         if row["suspended_until"]:
             try:
                 until = datetime.fromisoformat(row["suspended_until"])
-                if datetime.utcnow() > until:
+                now = now_il()
+                if until.tzinfo is None:
+                    # רשומה ישנה שנשמרה לפני המעבר לשעון ישראל (UTC נאיבי)
+                    now_for_compare = now.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    now_for_compare = now
+                if now_for_compare > until:
                     lift_suspension(telegram_id)
                     return None
             except Exception:
@@ -647,8 +653,8 @@ def add_admin_note(
     try:
         with get_connection() as conn:
             conn.execute(
-                "INSERT INTO user_admin_notes (telegram_id, note, created_by) VALUES (?,?,?)",
-                (telegram_id, note, created_by),
+                "INSERT INTO user_admin_notes (telegram_id, note, created_by, created_at) VALUES (?,?,?,?)",
+                (telegram_id, note, created_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
         return True
@@ -879,10 +885,10 @@ def delete_user_history(telegram_id: int) -> bool:
             conn.execute(
                 """
                 INSERT INTO user_history_resets (telegram_id, reset_at)
-                VALUES (?, datetime('now'))
+                VALUES (?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET reset_at = excluded.reset_at
                 """,
-                (telegram_id,),
+                (telegram_id, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
         return True
