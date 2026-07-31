@@ -802,10 +802,6 @@ def build_publishing_handler(
                 return S_BTN_VIEW
             pub_update_button_type(btn_id, "page_link")
             pub_update_button_target_page(btn_id, new_page_id)
-            # מנקים value ישן — אותה סיבה כמו ב-cb_btn_set_target: כפתור
-            # page_link לא אמור להחזיק ערך טקסט חופשי, וזה מונע מצב שבו
-            # value ישן (מכפתור שהיה למשל מסוג text) נשאר "תקוע" בשקט.
-            pub_update_button_value(btn_id, "")
             target_page_id = new_page_id
 
         context.user_data.update({_K_OWNER_TYPE: "page", _K_OWNER_ID: target_page_id})
@@ -841,7 +837,9 @@ def build_publishing_handler(
             pages = pub_get_all_pages()
             await update.callback_query.edit_message_text(
                 "בחר עמוד יעד:",
-                reply_markup=kb_select_target_page(pages, 0),
+                reply_markup=kb_select_target_page(
+                    pages, 0, cancel_cb=cb("btn", "list", owner_type, owner_id)
+                ),
             )
             return S_BTN_SELECT_PAGE
 
@@ -1337,6 +1335,7 @@ def build_publishing_handler(
                 CallbackQueryHandler(cb_btn_set_type,   pattern=r"^pub:btn:set_type:"),
                 CallbackQueryHandler(cb_btn_apply_type, pattern=r"^pub:btn:apply_type:"),
                 CallbackQueryHandler(cb_btn_list,       pattern=r"^pub:btn:list:"),
+                CallbackQueryHandler(cb_btn_view,       pattern=r"^pub:btn:view:"),
             ],
             S_BTN_SELECT_PAGE: [
                 CallbackQueryHandler(cb_btn_set_target, pattern=r"^pub:btn:set_target:"),

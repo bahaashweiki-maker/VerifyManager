@@ -145,6 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             register_or_touch_subscriber(update.effective_user)
         except Exception:
             pass
+    context.user_data.pop("_nav_stack", None)
     await render_home(context.bot, update.effective_chat.id)
 
 
@@ -275,6 +276,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         except Exception:
             pass
+        context.user_data.pop("_nav_stack", None)
         await render_home(context.bot, query.message.chat_id)
         return
 

@@ -325,13 +325,20 @@ def kb_button_type_change(btn_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def kb_select_target_page(pages: list, btn_id: int) -> InlineKeyboardMarkup:
-    """בחירת עמוד יעד לכפתור page_link — כל עמוד בשורה עצמאית."""
+def kb_select_target_page(pages: list, btn_id: int, cancel_cb: str | None = None) -> InlineKeyboardMarkup:
+    """
+    בחירת עמוד יעד לכפתור page_link — כל עמוד בשורה עצמאית.
+
+    cancel_cb: יעד מפורש לכפתור הביטול. אם לא נמסר — ברירת המחדל היא
+    "pub:btn:view:{btn_id}" (מתאים לזרימת עריכת כפתור קיים, שבה btn_id
+    אמיתי). בזרימת יצירת כפתור חדש btn_id הוא placeholder (0), ולכן שם
+    יש להעביר cancel_cb מפורש שמצביע חזרה לרשימת הכפתורים.
+    """
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(page["title"], callback_data=cb("btn", "set_target", btn_id, page["id"]))]
         for page in pages
     ]
-    rows.append([cancel_button(cb("btn", "view", btn_id), "✖️ ביטול")])
+    rows.append([cancel_button(cancel_cb or cb("btn", "view", btn_id), "✖️ ביטול")])
     return InlineKeyboardMarkup(rows)
 
 
