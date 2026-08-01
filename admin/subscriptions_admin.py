@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+from database.database import IL_TZ, now_il
 
 from services.subscribers_service import (
     list_subscribers_page,
@@ -1136,7 +1137,7 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
 
 async def _set_publication_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     suffix = data[len("SUBS_PUB_DELAY_"):]
-    now = datetime.utcnow()
+    now = now_il().replace(tzinfo=None)
     try:
         amount = int(suffix[:-1])
     except (TypeError, ValueError):
@@ -1213,7 +1214,7 @@ async def _set_publication_recurring(update: Update, context: ContextTypes.DEFAU
         return
 
     payload = _build_send_payload_from_draft(draft)
-    next_dt = datetime.utcnow() + timedelta(minutes=minutes)
+    next_dt = now_il().replace(tzinfo=None) + timedelta(minutes=minutes)
     next_run_at = next_dt.strftime("%Y-%m-%d %H:%M:%S")
     edit_pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
     if edit_pub_id > 0:
@@ -1301,7 +1302,7 @@ async def _set_publication_monthly(update: Update, context: ContextTypes.DEFAULT
         await update.callback_query.answer("אין תוכן לפרסום", show_alert=True)
         return
 
-    now = datetime.utcnow()
+    now = now_il().replace(tzinfo=None)
     day_of_month = now.day
     hour = now.hour
     minute = now.minute
@@ -1607,7 +1608,7 @@ async def _resume_publication(update: Update, context: ContextTypes.DEFAULT_TYPE
     if int(p.get("is_recurring") or 0) != 1:
         await update.callback_query.answer("רק למחזורי ניתן להפעיל מחדש", show_alert=True)
         return
-    next_run = compute_next_run(p, from_time=datetime.utcnow())
+    next_run = compute_next_run(p, from_time=now_il().replace(tzinfo=None))
     if not next_run:
         await update.callback_query.answer("תדירות לא תקינה", show_alert=True)
         return
@@ -1669,7 +1670,7 @@ async def _show_publication_stats_for_one(update: Update, context: ContextTypes.
 
 async def _bootstrap_publication_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
     rows, _ = list_publications_paged(page=1, per_page=200)
-    now = datetime.utcnow()
+    now = now_il().replace(tzinfo=None)
     for p in rows:
         pub_id = int(p.get("id") or 0)
         if pub_id <= 0:
@@ -1710,9 +1711,10 @@ async def _schedule_one_time_job(context: ContextTypes.DEFAULT_TYPE, publication
     await _cancel_publication_jobs(context, publication_id)
     if not context.job_queue:
         return
+    run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
     job = context.job_queue.run_once(
         _publication_job_callback,
-        when=run_at,
+        when=run_when,
         data={"publication_id": publication_id, "mode": "once"},
         name=f"pub_once_{publication_id}",
     )
@@ -1723,9 +1725,10 @@ async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publicatio
     await _cancel_publication_jobs(context, publication_id)
     if not context.job_queue:
         return
+    run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
     job = context.job_queue.run_once(
         _publication_job_callback,
-        when=run_at,
+        when=run_when,
         data={"publication_id": publication_id, "mode": "repeat"},
         name=f"pub_repeat_{publication_id}",
     )
@@ -1799,20 +1802,21 @@ async def _bootstrap_publication_delete_jobs(context: ContextTypes.DEFAULT_TYPE)
         try:
             run_at = datetime.strptime(delete_at, "%Y-%m-%d %H:%M:%S")
         except Exception:
-            run_at = datetime.utcnow()
+            run_at = now_il().replace(tzinfo=None)
         await _schedule_publication_delete_job(context, delivery_id, run_at)
 
 
 async def _schedule_publication_delete_job(context: ContextTypes.DEFAULT_TYPE, delivery_id: int, run_at: datetime) -> None:
     if not context.job_queue:
         return
+    run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
     job_name = f"pub_del_{delivery_id}"
     for job in context.job_queue.jobs():
         if job.name == job_name:
             job.schedule_removal()
     job = context.job_queue.run_once(
         _publication_delete_job_callback,
-        when=run_at,
+        when=run_when,
         data={"delivery_id": delivery_id},
         name=job_name,
     )
@@ -1854,7 +1858,7 @@ async def _process_publication_auto_delete(context: ContextTypes.DEFAULT_TYPE, p
     minutes = int(pub.get("auto_delete_minutes") or 0)
     if minutes <= 0:
         return
-    delete_at_dt = datetime.utcnow() + timedelta(minutes=minutes)
+    delete_at_dt = now_il().replace(tzinfo=None) + timedelta(minutes=minutes)
     delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
     update_publication_record(publication_id, auto_delete_at=delete_at)
     for item in deliveries:
@@ -3142,7 +3146,7 @@ async def handle_subscriptions_input(
             return
         raw = (update.message.text or "").strip()
 
-        now = datetime.utcnow()
+        now = now_il().replace(tzinfo=None)
         recurring_plan = _parse_manual_recurrence(raw, now)
         if recurring_plan is not None:
             every_minutes = int(recurring_plan.get("repeat_every_minutes") or 0)
