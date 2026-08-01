@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from database.database import get_connection
+from database.database import get_connection, now_il
 
 
 def get_all_publications(limit: int = 50) -> list:
@@ -296,6 +296,7 @@ def get_active_recurring_publications() -> list:
 
 
 def increment_publication_delivery(publication_id: int, success_count: int, fail_count: int, total_targets: int) -> None:
+    now_str = now_il().strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
         conn.execute(
             """
@@ -303,11 +304,11 @@ def increment_publication_delivery(publication_id: int, success_count: int, fail
             SET sent_success_count = COALESCE(sent_success_count, 0) + ?,
                 sent_fail_count = COALESCE(sent_fail_count, 0) + ?,
                 total_targets = ?,
-                last_sent_at = datetime('now'),
-                updated_at = datetime('now')
+                last_sent_at = ?,
+                updated_at = ?
             WHERE id = ?
             """,
-            (success_count, fail_count, total_targets, publication_id),
+            (success_count, fail_count, total_targets, now_str, now_str, publication_id),
         )
         conn.commit()
 

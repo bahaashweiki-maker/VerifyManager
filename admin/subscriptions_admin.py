@@ -1550,11 +1550,14 @@ async def _show_publication_details(update: Update, context: ContextTypes.DEFAUL
         await update.callback_query.answer("פרסום לא נמצא", show_alert=True)
         return
     status = str(p.get("status") or "")
+    title = str(p.get("title") or "").strip() or "פרסום ללא כותרת"
+    if title.upper().startswith(("TIME_", "AUTO_DELETE_", "TEST_")):
+        title = "פרסום"
     pending_targets = count_publication_recipients(str(p.get("target_type") or "all"), p.get("target_value")) if status in {"scheduled", "active"} else 0
     auto_delete_minutes = int(p.get("auto_delete_minutes") or 0)
     text = (
         f"📄 <b>פרסום #{publication_id}</b>\n\n"
-        f"כותרת: <b>{(p.get('title') or 'פרסום ללא כותרת')}</b>\n"
+        f"כותרת: <b>{title}</b>\n"
         f"מצב: <b>{_publication_status_label(status)}</b>\n"
         f"מחזוריות: <b>{_recurrence_label(p)}</b>\n"
         f"יעד: <b>{_publication_target_label(str(p.get('target_type') or 'all'), p.get('target_value'))}</b>\n"
