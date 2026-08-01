@@ -2420,6 +2420,9 @@ async def _close_chat_screen(update: Update, data: str) -> None:
                     "✅ השיחה עם צוות הבוט נסגרה.\n"
                     "תודה על שיתוף הפעולה."
                 ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING"),
+                ]]),
             )
         except Exception:
             pass

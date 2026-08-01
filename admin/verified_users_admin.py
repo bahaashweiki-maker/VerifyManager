@@ -2103,11 +2103,6 @@ async def _process_send_chat_message(
         return
 
     admin_sender_id = update.message.from_user.id
-    admin_sender_name = _fmt_admin_name(
-        update.message.from_user.full_name,
-        update.message.from_user.username,
-        admin_sender_id,
-    )
     add_verification_chat_message(
         chat_id,
         "admin",
@@ -2119,7 +2114,7 @@ async def _process_send_chat_message(
     try:
         await context.bot.send_message(
             chat_id=v["telegram_id"],
-            text=f"💬 <b>הודעה מ-{admin_sender_name}:</b>\n\n{text}",
+            text=f"🧑‍💼 <b>הודעה ממנהל האימותים</b>\n\n{text}",
             parse_mode="HTML",
         )
     except Exception:
@@ -2273,6 +2268,9 @@ async def _execute_close_chat(
                     "🙏 תודה על שיתוף הפעולה.\n\n"
                     "🔐 צוות האימות"
                 ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING"),
+                ]]),
                 parse_mode="HTML",
             )
         except Exception as exc:
@@ -2356,12 +2354,7 @@ async def handle_verification_chat_user_message(
         return True
 
     try:
-        opened_by_name = _fmt_admin_name(
-            active_chat.get("opened_by_full_name"),
-            active_chat.get("opened_by_username"),
-            active_chat.get("opened_by"),
-        )
-        await msg.reply_text(f"✅ ההודעה נשלחה אל {opened_by_name}.")
+        await msg.reply_text("✅ ההודעה שלך נשלחה למנהל האימותים.")
         admin_id = active_chat["opened_by"]
         vid      = active_chat["verification_id"]
         if forward_video_note_file_id:
