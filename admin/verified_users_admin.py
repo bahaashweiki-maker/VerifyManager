@@ -2320,32 +2320,40 @@ async def handle_verification_chat_user_message(
     chat_id     = active_chat["id"]
     msg         = update.message
 
-    if msg.photo:
-        file_id = msg.photo[-1].file_id
-        add_verification_chat_message(chat_id, "user", "photo", file_id=file_id, sender_id=user_id)
-        label = "📷 תמונה"
-        forward_video_note_file_id = None
-    elif msg.video:
-        file_id = msg.video.file_id
-        add_verification_chat_message(chat_id, "user", "video", file_id=file_id, sender_id=user_id)
-        label = "🎥 סרטון"
-        forward_video_note_file_id = None
-    elif msg.video_note:
-        file_id = msg.video_note.file_id
-        add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id, sender_id=user_id)
-        label = "⭕️ Video Note"
-        forward_video_note_file_id = None
-    elif msg.document:
-        file_id = msg.document.file_id
-        add_verification_chat_message(chat_id, "user", "document", file_id=file_id, sender_id=user_id)
-        label = "📎 מסמך"
-        forward_video_note_file_id = None
-    elif msg.text:
-        add_verification_chat_message(chat_id, "user", "text", content_text=msg.text, sender_id=user_id)
-        label = f"💬 {msg.text[:100]}"
-        forward_video_note_file_id = None
-    else:
-        return False
+    media_message = False
+    try:
+        if msg.photo:
+            file_id = msg.photo[-1].file_id
+            add_verification_chat_message(chat_id, "user", "photo", file_id=file_id, sender_id=user_id)
+            label = "📷 תמונה"
+            forward_video_note_file_id = None
+            media_message = True
+        elif msg.video:
+            file_id = msg.video.file_id
+            add_verification_chat_message(chat_id, "user", "video", file_id=file_id, sender_id=user_id)
+            label = "🎥 סרטון"
+            forward_video_note_file_id = None
+            media_message = True
+        elif msg.video_note:
+            file_id = msg.video_note.file_id
+            add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id, sender_id=user_id)
+            label = "⭕️ Video Note"
+            forward_video_note_file_id = None
+            media_message = True
+        elif msg.document:
+            file_id = msg.document.file_id
+            add_verification_chat_message(chat_id, "user", "document", file_id=file_id, sender_id=user_id)
+            label = "📎 מסמך"
+            forward_video_note_file_id = None
+            media_message = True
+        elif msg.text:
+            add_verification_chat_message(chat_id, "user", "text", content_text=msg.text, sender_id=user_id)
+            label = f"💬 {msg.text[:100]}"
+            forward_video_note_file_id = None
+        else:
+            return False
+    except Exception:
+        return True
 
     try:
         opened_by_name = _fmt_admin_name(
@@ -2354,12 +2362,8 @@ async def handle_verification_chat_user_message(
             active_chat.get("opened_by"),
         )
         await msg.reply_text(f"✅ ההודעה נשלחה אל {opened_by_name}.")
-    except Exception:
-        pass
-
-    admin_id = active_chat["opened_by"]
-    vid      = active_chat["verification_id"]
-    try:
+        admin_id = active_chat["opened_by"]
+        vid      = active_chat["verification_id"]
         if forward_video_note_file_id:
             await context.bot.send_video_note(
                 chat_id=admin_id,
@@ -2382,6 +2386,12 @@ async def handle_verification_chat_user_message(
         )
     except Exception:
         pass
+    else:
+        if media_message:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
 
     return True
 

@@ -3505,36 +3505,34 @@ async def handle_subscriber_user_message(
     if not chat:
         return False
 
-    if media:
-        add_subscriber_chat_message(
-            chat_id=chat["id"],
-            sender_role="subscriber",
-            sender_id=update.effective_user.id,
-            message_text=_pack_media_meta(media["media_type"], media.get("caption")),
-            file_id=media["file_id"],
-        )
-        admin_preview = _media_label(media["media_type"])
-        if media.get("caption"):
-            admin_preview += f"\n{media['caption']}"
-    else:
-        add_subscriber_chat_message(
-            chat_id=chat["id"],
-            sender_role="subscriber",
-            sender_id=update.effective_user.id,
-            message_text=text,
-        )
-        admin_preview = text
     try:
+        if media:
+            add_subscriber_chat_message(
+                chat_id=chat["id"],
+                sender_role="subscriber",
+                sender_id=update.effective_user.id,
+                message_text=_pack_media_meta(media["media_type"], media.get("caption")),
+                file_id=media["file_id"],
+            )
+            admin_preview = _media_label(media["media_type"])
+            if media.get("caption"):
+                admin_preview += f"\n{media['caption']}"
+        else:
+            add_subscriber_chat_message(
+                chat_id=chat["id"],
+                sender_role="subscriber",
+                sender_id=update.effective_user.id,
+                message_text=text,
+            )
+            admin_preview = text
+
         track_subscriber_activity(
             subscriber_id=int(subscriber["id"]),
             event_key="chat_message",
             payload=None,
             increment_basic_activity=True,
         )
-    except Exception:
-        pass
 
-    try:
         await context.bot.send_message(
             chat_id=chat["admin_id"],
             text=(
@@ -3548,6 +3546,12 @@ async def handle_subscriber_user_message(
             parse_mode="HTML",
         )
     except Exception:
-        pass
+        return True
+
+    if media:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     return True
