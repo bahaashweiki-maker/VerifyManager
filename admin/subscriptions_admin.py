@@ -3490,10 +3490,6 @@ async def handle_subscriber_user_message(
 ) -> bool:
     if not update.message or not update.effective_user:
         return False
-    media = _extract_message_media(update.message)
-    text = (update.message.text or "").strip() if update.message else ""
-    if not text and not media:
-        return False
 
     from services.subscribers_service import get_subscriber_card_by_telegram_id
 
@@ -3503,6 +3499,13 @@ async def handle_subscriber_user_message(
 
     chat = get_open_subscriber_chat(subscriber["id"])
     if not chat:
+        if context.user_data.get("support_chat_suppressed"):
+            return False
+        return False
+
+    media = _extract_message_media(update.message)
+    text = (update.message.text or "").strip() if update.message else ""
+    if not text and not media:
         return False
 
     try:

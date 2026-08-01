@@ -74,6 +74,7 @@ _CONTACT_STATE_KEY = "user_contact_state"
 _CONTACT_CATEGORY_KEY = "user_contact_category"
 _CONTACT_SUBSCRIBER_ID_KEY = "user_contact_subscriber_id"
 _CONTACT_CHAT_ID_KEY = "user_contact_chat_id"
+_SUPPORT_CHAT_SUPPRESSED_KEY = "support_chat_suppressed"
 
 _CONTACT_CATEGORIES: dict[str, str] = {
     "general": "💬 פנייה כללית",
@@ -780,12 +781,14 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pass
 
     if action == "home":
+        context.user_data[_SUPPORT_CHAT_SUPPRESSED_KEY] = True
         await render_home(bot, chat_id)
 
     elif action == "page" and len(parts) > 3:
         await render_page(bot, chat_id, int(parts[3]), telegram_id=query.from_user.id)
 
     elif action == "contact":
+        context.user_data.pop(_SUPPORT_CHAT_SUPPRESSED_KEY, None)
         subscriber = register_or_touch_subscriber(query.from_user)
         subscriber_id = int(subscriber["id"])
         open_chat = get_open_subscriber_chat(subscriber_id)
@@ -828,6 +831,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif action == "contactcat" and len(parts) > 3:
+        context.user_data.pop(_SUPPORT_CHAT_SUPPRESSED_KEY, None)
         category_key = parts[3]
         category_label = _CONTACT_CATEGORIES.get(category_key)
         if not category_label:

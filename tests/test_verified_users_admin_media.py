@@ -89,7 +89,7 @@ def test_subscriptions_media_message_is_deleted_after_successful_storage() -> No
         ),
         effective_user=SimpleNamespace(id=42),
     )
-    context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    context = SimpleNamespace(user_data={}, bot=SimpleNamespace(send_message=AsyncMock()))
 
     with patch("services.subscribers_service.get_subscriber_card_by_telegram_id", return_value={"id": 5, "telegram_id": 42}), patch.object(
         subscriptions_admin,
@@ -104,3 +104,57 @@ def test_subscriptions_media_message_is_deleted_after_successful_storage() -> No
     assert result is True
     add_mock.assert_called_once()
     update.message.delete.assert_awaited_once()
+
+
+def test_subscriber_user_message_is_suppressed_after_restart() -> None:
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            photo=None,
+            video=None,
+            video_note=None,
+            document=None,
+            text="hello",
+            delete=AsyncMock(),
+        ),
+        effective_user=SimpleNamespace(id=42),
+    )
+    context = SimpleNamespace(user_data={"support_chat_suppressed": True}, bot=SimpleNamespace(send_message=AsyncMock()))
+
+    with patch("services.subscribers_service.get_subscriber_card_by_telegram_id", return_value={"id": 5, "telegram_id": 42}), patch.object(
+        subscriptions_admin,
+        "get_open_subscriber_chat",
+        return_value=None,
+    ):
+        result = asyncio.run(subscriptions_admin.handle_subscriber_user_message(update, context))
+
+    assert result is False
+
+
+def test_subscriber_user_message_is_allowed_for_open_admin_chat() -> None:
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            photo=None,
+            video=None,
+            video_note=None,
+            document=None,
+            text="hello",
+            delete=AsyncMock(),
+        ),
+        effective_user=SimpleNamespace(id=42),
+    )
+    context = SimpleNamespace(user_data={"support_chat_suppressed": True}, bot=SimpleNamespace(send_message=AsyncMock()))
+
+    with patch("services.subscribers_service.get_subscriber_card_by_telegram_id", return_value={"id": 5, "telegram_id": 42}), patch.object(
+        subscriptions_admin,
+        "get_open_subscriber_chat",
+        return_value={"id": 8, "admin_id": 99},
+    ), patch.object(subscriptions_admin, "add_subscriber_chat_message") as add_mock, patch.object(
+        subscriptions_admin,
+        "track_subscriber_activity",
+    ):
+        result = asyncio.run(subscriptions_admin.handle_subscriber_user_message(update, context))
+
+    assert result is True
+    add_mock.assert_called_once()

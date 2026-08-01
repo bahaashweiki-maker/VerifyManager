@@ -146,6 +146,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     context.user_data.clear()
+    context.user_data["support_chat_suppressed"] = True
     await render_home(context.bot, update.effective_chat.id)
 
 
