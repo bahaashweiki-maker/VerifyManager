@@ -1838,6 +1838,20 @@ def _fmt_admin_name(full_name, username, admin_id) -> str:
 # שיחות אימות
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _message_media_label(message_type: str) -> str | None:
+    labels = {
+        "photo": "📷 תמונה",
+        "video": "🎥 וידאו",
+        "video_note": "🔵 וידאו עגול",
+        "document": "📄 מסמך",
+        "voice": "🎤 הודעה קולית",
+        "audio": "🎵 אודיו",
+        "animation": "🎞️ אנימציה",
+        "sticker": "😊 סטיקר",
+    }
+    return labels.get(message_type)
+
+
 def _build_chat_view(vid: int, chat_id: int):
     """בונה (text, keyboard) לתצוגת שיחה."""
     v    = get_verified_user_by_id(vid)
@@ -1872,16 +1886,7 @@ def _build_chat_view(vid: int, chat_id: int):
         return "מנהל" if sender_role == "admin" else "מנוי"
 
     def _media_button_label(sender_role: str, message_type: str) -> str | None:
-        labels = {
-            "photo": "📷 תמונה",
-            "video": "🎥 וידאו",
-            "document": "📄 מסמך",
-            "voice": "🎤 הודעה קולית",
-            "audio": "🎵 אודיו",
-            "animation": "🎞️ אנימציה",
-            "sticker": "😊 סטיקר",
-        }
-        label = labels.get(message_type)
+        label = _message_media_label(message_type)
         if not label:
             return None
         return f"{_sender_prefix(sender_role)} {_sender_label(sender_role)} · {label} · פתח"
@@ -1912,6 +1917,12 @@ def _build_chat_view(vid: int, chat_id: int):
             lines.append(f"<b>{role}:</b> 🎥 וידאו <i>({msg_date} {msg_time})</i>")
             media_buttons.append([InlineKeyboardButton(
                 _media_button_label(msg["sender_role"], mtype) or f"🎥 וידאו · פתח",
+                callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
+            )])
+        elif mtype == "video_note":
+            lines.append(f"<b>{role}:</b> 🔵 וידאו עגול <i>({msg_date} {msg_time})</i>")
+            media_buttons.append([InlineKeyboardButton(
+                _media_button_label(msg["sender_role"], mtype) or f"🔵 וידאו עגול · פתח",
                 callback_data=f"VCHAT_MEDIA_{vid}_{chat_id}_{msg['id']}",
             )])
         elif mtype == "document":
@@ -2158,6 +2169,12 @@ async def _show_chat_media(
             caption="🎥 סרטון מהשיחה",
             reply_markup=back_kb,
         )
+    elif msg["message_type"] == "video_note":
+        await context.bot.send_video_note(
+            chat_id=update.callback_query.message.chat_id,
+            video_note=msg["file_id"],
+            reply_markup=back_kb,
+        )
     elif msg["message_type"] == "document":
         await context.bot.send_document(
             chat_id=update.callback_query.message.chat_id,
@@ -2317,7 +2334,7 @@ async def handle_verification_chat_user_message(
         file_id = msg.video_note.file_id
         add_verification_chat_message(chat_id, "user", "video_note", file_id=file_id, sender_id=user_id)
         label = "⭕️ Video Note"
-        forward_video_note_file_id = file_id
+        forward_video_note_file_id = None
     elif msg.document:
         file_id = msg.document.file_id
         add_verification_chat_message(chat_id, "user", "document", file_id=file_id, sender_id=user_id)
