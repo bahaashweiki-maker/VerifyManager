@@ -145,7 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             register_or_touch_subscriber(update.effective_user)
         except Exception:
             pass
-    context.user_data.pop("_nav_stack", None)
+    context.user_data.clear()
     await render_home(context.bot, update.effective_chat.id)
 
 
@@ -174,6 +174,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "BOT_RESTART_START":
         await query.answer()
+        return await start(update, context)
+
+    if data == "RESTART_BOT_PENDING":
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         return await start(update, context)
 
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()

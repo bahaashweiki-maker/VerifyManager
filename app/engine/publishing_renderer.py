@@ -804,6 +804,9 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await bot.send_message(
                     query.message.chat_id,
                     "⏳ הבקשה שלך כבר בטיפול.\nאנא המתן למענה מהמנהל.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+                    ]),
                 )
                 return
         else:
