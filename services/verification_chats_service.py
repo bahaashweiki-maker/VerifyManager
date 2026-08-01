@@ -3,21 +3,22 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from database.database import get_connection
+from database.database import get_connection, now_il
 
 logger = logging.getLogger(__name__)
 
 
 def create_verification_chat(telegram_id: int, verification_id: int, opened_by: int) -> Optional[int]:
     try:
+        created_at = now_il().strftime("%Y-%m-%d %H:%M:%S")
         with get_connection() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verification_chats
-                    (telegram_id, verification_id, opened_by, is_open)
-                VALUES (?, ?, ?, 1)
+                    (telegram_id, verification_id, opened_by, is_open, created_at)
+                VALUES (?, ?, ?, 1, ?)
                 """,
-                (telegram_id, verification_id, opened_by),
+                (telegram_id, verification_id, opened_by, created_at),
             )
             conn.commit()
             return cur.lastrowid
@@ -65,14 +66,15 @@ def get_verification_chat(chat_id: int) -> Optional[dict]:
 
 def close_verification_chat(chat_id: int) -> bool:
     try:
+        closed_at = now_il().strftime("%Y-%m-%d %H:%M:%S")
         with get_connection() as conn:
             conn.execute(
                 """
                 UPDATE verification_chats
-                SET is_open = 0, closed_at = datetime('now')
+                SET is_open = 0, closed_at = ?
                 WHERE id = ?
                 """,
-                (chat_id,),
+                (closed_at, chat_id),
             )
             conn.commit()
         return True
@@ -108,14 +110,15 @@ def add_verification_chat_message(
     sender_id: int | None = None,
 ) -> bool:
     try:
+        created_at = now_il().strftime("%Y-%m-%d %H:%M:%S")
         with get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO verification_chat_messages
-                    (chat_id, sender_role, message_type, content_text, file_id, sender_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (chat_id, sender_role, message_type, content_text, file_id, sender_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (chat_id, sender_role, message_type, content_text, file_id, sender_id),
+                (chat_id, sender_role, message_type, content_text, file_id, sender_id, created_at),
             )
             conn.commit()
         return True
