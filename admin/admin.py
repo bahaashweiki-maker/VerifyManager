@@ -29,7 +29,20 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if update.callback_query:
             await update.callback_query.answer("⛔ אין לך הרשאה.", show_alert=True)
         else:
-            await update.message.reply_text("⛔ אין לך הרשאה להיכנס למערכת הניהול.")
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            try:
+                warning_message = await update.message.reply_text("⛔ אין לך הרשאה להיכנס למערכת הניהול.")
+                import asyncio
+                await asyncio.sleep(2)
+                try:
+                    await warning_message.delete()
+                except Exception:
+                    pass
+            except Exception:
+                pass
         return
 
     is_super = is_super_admin(uid)
