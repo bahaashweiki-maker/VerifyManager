@@ -231,7 +231,10 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🦋 התקבלה הודעה מצוות הבוט\n"
                     "────────────────────\n"
                     f"{update.message.text}"
-                  )
+                                    ),
+                                reply_markup=InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+                                ]),
                 )
 
             await update.message.reply_text(
@@ -391,7 +394,10 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "אנחנו מטפלים בבקשה שלך בעדיפות גבוהה.\n\n"
             "📢 תקבל עדכון ברגע שהאימות יאושר.\n"
             "תודה על שיתוף הפעולה 🙏",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ])
         )
 
         # שליחת הכל למנהל

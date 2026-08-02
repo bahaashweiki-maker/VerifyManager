@@ -375,7 +375,10 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🎉 האימות שלך אושר בהצלחה!\n\n"
                 "כעת החשבון שלך מאומת וניתן להשתמש בכל שירותי המערכת.\n\n"
                 "תודה שבחרת בנו 🦋"
-            )
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ]),
         )
 
         await query.answer(
@@ -402,7 +405,10 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ האימות שלך נדחה.\n\n"
                 "ניתן להגיש אימות חדש עם מסמכים ברורים יותר.\n\n"
                 "תודה שבחרת בנו 🦋"
-            )
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ]),
         )
 
         await query.answer(
@@ -431,6 +437,7 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "אם לדעתך מדובר בטעות, ניתן לפנות אלינו לבירור."
                 ),
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
                     [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
                 ]),
                 parse_mode="HTML",

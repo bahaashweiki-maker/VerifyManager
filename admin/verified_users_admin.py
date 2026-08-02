@@ -783,7 +783,13 @@ async def _process_add_warning(
                 "קיבלת אזהרה מצוות הניהול.\n\n"
                 "אנא הקפד לפעול בהתאם לכללי הפלטפורמה."
             )
-            await context.bot.send_message(chat_id=v["telegram_id"], text=user_text)
+            await context.bot.send_message(
+                chat_id=v["telegram_id"],
+                text=user_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+                ]),
+            )
         except Exception:
             # Do not fail the admin flow if user notification fails
             pass
@@ -1421,7 +1427,13 @@ async def _process_send_message(
     caller_id = update.message.from_user.id
 
     try:
-        await context.bot.send_message(chat_id=v["telegram_id"], text=text)
+        await context.bot.send_message(
+            chat_id=v["telegram_id"],
+            text=text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ]),
+        )
         log_message(v["telegram_id"], text, sent_by=caller_id)
         msg = "✅ <b>ההודעה נשלחה בהצלחה.</b>"
     except Exception as exc:

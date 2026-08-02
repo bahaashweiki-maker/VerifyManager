@@ -372,11 +372,12 @@ def suspend_user(
             )
             conn.execute(
                 """INSERT INTO user_suspensions
-                       (telegram_id, duration_key, suspended_until, reason, created_by)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (telegram_id, duration_key, until, reason, created_by),
+                       (telegram_id, duration_key, suspended_until, reason, created_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (telegram_id, duration_key, until, reason, created_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
+        _log_action(telegram_id, "suspension", performed_by=created_by)
         return True
     except Exception as exc:
         logger.error("suspend_user failed: %s", exc)
@@ -393,6 +394,7 @@ def lift_suspension(telegram_id: int) -> bool:
                 (now_il().strftime("%Y-%m-%d %H:%M:%S"), telegram_id),
             )
             conn.commit()
+        _log_action(telegram_id, "unsuspend")
         return True
     except Exception as exc:
         logger.error("lift_suspension failed: %s", exc)
@@ -944,8 +946,8 @@ def _log_action(
     try:
         with get_connection() as conn:
             conn.execute(
-                "INSERT INTO user_action_log (telegram_id, action, performed_by) VALUES (?,?,?)",
-                (telegram_id, action, performed_by),
+                "INSERT INTO user_action_log (telegram_id, action, performed_by, created_at) VALUES (?,?,?,?)",
+                (telegram_id, action, performed_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
     except Exception as exc:

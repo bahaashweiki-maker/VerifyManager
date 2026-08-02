@@ -1,4 +1,13 @@
-from database.database import get_connection
+from database.database import get_connection, now_il
+
+
+def _log_action(telegram_id, action, performed_by=None):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO user_action_log (telegram_id, action, performed_by, created_at) VALUES (?,?,?,?)",
+            (telegram_id, action, performed_by, now_il().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
 
 
 def get_pending_verifications():
@@ -154,7 +163,16 @@ def block_verification(verification_id):
             WHERE id = ?
         """, (verification_id,))
 
+        cursor.execute(
+            "SELECT telegram_id FROM verifications WHERE id = ?",
+            (verification_id,),
+        )
+        row = cursor.fetchone()
+
         conn.commit()
+
+    if row:
+        _log_action(row[0], "block")
 
 
 # ======================================
