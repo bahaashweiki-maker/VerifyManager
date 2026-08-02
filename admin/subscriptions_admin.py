@@ -294,6 +294,12 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
             return await _invalid_callback(update)
         return await _start_publication_button_edit(update, context, idx)
 
+    if data.startswith("SUBS_PUB_BTN_URL_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_URL_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit_url(update, context, idx)
+
     if data.startswith("SUBS_PUB_BTN_EDIT_"):
         idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_"):])
         if idx is None:
@@ -304,8 +310,9 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
             value = str((buttons[idx - 1] or {}).get("url") or "")
             if decode_publication_note(value) is not None:
                 return await _start_publication_button_edit(update, context, idx)
-        await update.callback_query.answer("עריכת כפתור URL אינה זמינה", show_alert=True)
-        return await _show_publication_buttons_menu(update, context)
+            return await _start_publication_button_edit_url(update, context, idx)
+        await update.callback_query.answer("כפתור לעריכה לא נמצא", show_alert=True)
+        return
 
     if data.startswith("SUBS_PUB_BTN_DELETE_"):
         idx = _parse_positive_int(data[len("SUBS_PUB_BTN_DELETE_"):])
@@ -716,7 +723,7 @@ def _draft_publication_keyboard(draft: dict) -> InlineKeyboardMarkup | None:
         if decode_publication_note(url) is not None:
             rows.append([InlineKeyboardButton(title, callback_data=f"SUBS_PUB_NOTE_DRAFT_{idx}")])
             continue
-        if url.startswith(("http://", "https://", "tg://")):
+        if url:
             rows.append([InlineKeyboardButton(title, url=url)])
     return InlineKeyboardMarkup(rows) if rows else None
 
@@ -861,7 +868,8 @@ def _publication_buttons_manage_keyboard(buttons: list[dict]) -> InlineKeyboardM
         else:
             short = (title[:22] + "…") if len(title) > 22 else title
             rows.append([
-                InlineKeyboardButton(f"🗑️ 🔗 {short}", callback_data=f"SUBS_PUB_BTN_DELETE_{idx}"),
+                InlineKeyboardButton(f"✏️ 🔗 {short}", callback_data=f"SUBS_PUB_BTN_URL_{idx}"),
+                InlineKeyboardButton("🗑️", callback_data=f"SUBS_PUB_BTN_DELETE_{idx}"),
             ])
 
     rows.append([InlineKeyboardButton("➕ הוסף כפתור קישור", callback_data="SUBS_PUB_BTN_ADD_URL")])
@@ -939,6 +947,36 @@ async def _start_publication_button_edit(update: Update, context: ContextTypes.D
     )
 
 
+async def _start_publication_button_edit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+
+    value = str((buttons[idx - 1] or {}).get("url") or "")
+    if decode_publication_note(value) is not None:
+        await update.callback_query.answer("זה כפתור הערה", show_alert=True)
+        return await _show_publication_buttons_menu(update, context)
+
+    current = buttons[idx - 1] or {}
+    context.user_data[_STATE] = _AWAIT_PUB_BTN_LABEL
+    context.user_data[_PUB_BTN_MODE] = "edit_url"
+    context.user_data[_PUB_BTN_EDIT_INDEX] = idx
+    context.user_data[_PUB_BTN_LABEL_TMP] = str(current.get("title") or f"כפתור {idx}")[:50]
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+
+    await _safe_query_edit(
+        update,
+        text="✏️ <b>עריכת כפתור קישור</b>\n\nשלח שם חדש לכפתור.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
 async def _delete_publication_button(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
     draft = context.user_data.get(_PUB_DRAFT) or {}
     buttons = list(draft.get("buttons") or [])
@@ -951,6 +989,19 @@ async def _delete_publication_button(update: Update, context: ContextTypes.DEFAU
     context.user_data[_PUB_PREVIEW_CONFIRMED] = False
     await update.callback_query.answer("הכפתור נמחק")
     await _show_publication_buttons_menu(update, context)
+
+
+async def _show_publication_url_button_hint(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+    value = str((buttons[idx - 1] or {}).get("url") or "")
+    if decode_publication_note(value) is not None:
+        await update.callback_query.answer("זה כפתור הערה", show_alert=True)
+        return
+    await update.callback_query.answer("לעריכה לחץ על שם הקישור. למחיקה לחץ על 🗑️")
 
 
 async def _show_publication_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3196,7 +3247,7 @@ async def handle_subscriptions_input(
         context.user_data[_PUB_BTN_LABEL_TMP] = label[:50]
         context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
         mode = context.user_data.get(_PUB_BTN_MODE)
-        prompt = "שלח קישור מלא (https://...)." if mode == "add_url" else "שלח טקסט הערה."
+        prompt = "שלח קישור מלא (https://...)." if mode in {"add_url", "edit_url"} else "שלח טקסט הערה."
         chat_id = context.user_data.get(_CHAT_ID)
         msg_id = context.user_data.get(_MSG_ID)
         if chat_id and msg_id:
@@ -3232,6 +3283,16 @@ async def handle_subscriptions_input(
                 return
             label = str(context.user_data.get(_PUB_BTN_LABEL_TMP) or "קישור")
             buttons.append({"title": label, "url": value[:300]})
+        elif mode == "edit_url":
+            if not value.startswith(("http://", "https://", "tg://")):
+                await update.message.reply_text("קישור לא תקין. שלח קישור שמתחיל ב-http:// או https:// או tg://")
+                return
+            idx = int(context.user_data.get(_PUB_BTN_EDIT_INDEX) or 0)
+            if not (1 <= idx <= len(buttons)):
+                await update.message.reply_text("כפתור לעריכה לא נמצא.")
+                return
+            label = str(context.user_data.get(_PUB_BTN_LABEL_TMP) or f"כפתור {idx}")
+            buttons[idx - 1] = {"title": label[:50], "url": value[:300]}
         elif mode == "add_note":
             label = str(context.user_data.get(_PUB_BTN_LABEL_TMP) or "הערה")
             buttons.append({"title": label, "url": encode_publication_note(value)})
