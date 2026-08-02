@@ -1986,7 +1986,32 @@ async def _show_publication_stats_menu(update: Update, context: ContextTypes.DEF
     lines = ["📈 <b>סטטיסטיקות פרסום</b>", f"סה״כ פרסומים: <b>{total}</b>", "", "בחר פרסום:"]
     kb_rows = []
     for p in rows:
-        kb_rows.append([InlineKeyboardButton(f"#{p['id']} · {_publication_status_label(str(p.get('status') or ''))}", callback_data=f"SUBS_PUB_STATS_VIEW_{p['id']}")])
+        status = _publication_status_label(str(p.get("status") or ""))
+        raw_title = str(p.get("title") or "").strip()
+        content_text = " ".join(str(p.get("content_text") or "").split())
+        media_type = str(p.get("media_type") or "").strip()
+        media_label = {
+            "photo": "תמונה",
+            "video": "וידאו",
+            "animation": "אנימציה",
+            "document": "מסמך",
+            "audio": "אודיו",
+            "voice": "הודעה קולית",
+            "video_note": "סרטון עגול",
+            "sticker": "סטיקר",
+        }.get(media_type, "")
+
+        if raw_title and raw_title not in {"פרסום", "פרסום ללא כותרת"}:
+            identity = raw_title
+        elif content_text:
+            identity = content_text[:28]
+        else:
+            identity = media_label or "פרסום ללא כותרת"
+
+        button_text = f"{identity[:36]} · {status}"
+        kb_rows.append([
+            InlineKeyboardButton(button_text, callback_data=f"SUBS_PUB_STATS_VIEW_{p['id']}")
+        ])
     kb_rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_MENU")])
     await _safe_query_edit(update, text="\n".join(lines), reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode="HTML")
 
@@ -1996,8 +2021,12 @@ async def _show_publication_stats_for_one(update: Update, context: ContextTypes.
     pub = stats.get("publication") or {}
     events = stats.get("events") or {}
     pending_targets = count_publication_recipients(str(pub.get("target_type") or "all"), pub.get("target_value")) if str(pub.get("status") or "") in {"scheduled", "active"} else 0
+    raw_title = str(pub.get("title") or "").strip()
+    content_text = " ".join(str(pub.get("content_text") or "").split())
+    display_name = raw_title if raw_title and raw_title not in {"פרסום", "פרסום ללא כותרת"} else (content_text[:36] if content_text else "פרסום")
     text = (
-        f"📈 <b>סטטיסטיקה לפרסום #{publication_id}</b>\n\n"
+        f"📈 <b>סטטיסטיקה לפרסום</b>\n"
+        f"שם: <b>{display_name}</b>\n\n"
         f"יעד: <b>{_publication_target_label(str(pub.get('target_type') or 'all'), pub.get('target_value'))}</b>\n"
         f"זמן שליחה אחרון: <b>{_fmt_iso(pub.get('last_sent_at'))}</b>\n"
         f"זמן שליחה הבא: <b>{_fmt_iso(pub.get('next_run_at'))}</b>\n"
