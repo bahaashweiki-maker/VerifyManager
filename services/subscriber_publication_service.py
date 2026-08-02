@@ -416,6 +416,23 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
         await query.answer("זהו כפתור קישור", show_alert=True)
         return True
 
+    subscriber_id = None
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM subscribers WHERE telegram_id = ? LIMIT 1",
+                (int(query.message.chat_id),),
+            ).fetchone()
+            if row:
+                subscriber_id = int(row[0])
+    except Exception:
+        subscriber_id = None
+
+    try:
+        record_publication_stat(publication_id, subscriber_id, "button_click")
+    except Exception:
+        pass
+
     await query.answer()
     await context.bot.send_message(
         chat_id=query.message.chat_id,

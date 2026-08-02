@@ -143,6 +143,20 @@ def add_subscriber_activity_event(
         return True
 
 
+def delete_subscriber_activity_events_by_key(subscriber_id: int, event_key: str) -> int:
+        with get_connection() as conn:
+                cur = conn.execute(
+                        """
+                        DELETE FROM subscriber_activity_log
+                        WHERE subscriber_id = ?
+                            AND event_key = ?
+                        """,
+                        (subscriber_id, event_key),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)
+
+
 def search_subscribers(term: str, limit: int = 50) -> list:
     pattern = f"%{term}%"
     username_term = term[1:] if term.startswith("@") else term

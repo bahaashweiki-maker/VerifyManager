@@ -27,10 +27,12 @@ from services.subscribers_service import (
     unsuspend_subscriber,
     block_subscriber,
     unblock_subscriber,
+    clear_subscriber_admin_notes,
     track_subscriber_activity,
 )
 from services.subscriber_stats_service import (
     get_subscription_system_stats_live,
+    get_subscriber_stats_activity,
     get_subscriber_personal_statistics,
     reset_personal_stats,
 )
@@ -249,6 +251,23 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
 
     if data.startswith("SUBS_STATS_"):
         return await _show_personal_stats(update, data)
+
+    if data.startswith("SUBS_NOTES_RESET_CONFIRM_"):
+        payload = _parse_card_payload(data, "SUBS_NOTES_RESET_CONFIRM_")
+        if payload is None:
+            return await _invalid_callback(update)
+        origin, page, subscriber_id = payload
+        return await _confirm_reset_subscriber_admin_notes(update, origin, page, subscriber_id)
+
+    if data.startswith("SUBS_NOTES_RESET_DO_"):
+        payload = _parse_card_payload(data, "SUBS_NOTES_RESET_DO_")
+        if payload is None:
+            return await _invalid_callback(update)
+        origin, page, subscriber_id = payload
+        return await _do_reset_subscriber_admin_notes(update, origin, page, subscriber_id)
+
+    if data.startswith("SUBS_NOTES_"):
+        return await _show_subscriber_admin_notes(update, data)
 
     if data.startswith("SUBS_SUSPEND_DO_"):
         return await _do_suspend(update, context, data)
@@ -574,6 +593,7 @@ async def _show_subscriber_card(
         [InlineKeyboardButton("⛔ ניהול סטטוס", callback_data=f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⚠️ הוסף אזהרה", callback_data=f"SUBS_WARN_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("📝 הוסף הערת מנהל", callback_data=f"SUBS_NOTE_{origin}_{page}_{subscriber_id}")],
+        [InlineKeyboardButton("📒 הערות מנהל", callback_data=f"SUBS_NOTES_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⬅️ חזרה", callback_data=back_cb)],
         private_chat_button,
     ])
@@ -3088,11 +3108,92 @@ async def _show_personal_stats(update: Update, data: str) -> None:
         text=text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("📒 הערות מנהל", callback_data=f"SUBS_NOTES_{origin}_{page}_{subscriber_id}")],
             [InlineKeyboardButton("🧹 איפוס סטטיסטיקה", callback_data=f"SUBS_STATS_RESET_CONFIRM_{origin}_{page}_{subscriber_id}")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
         ]),
         parse_mode="HTML",
     )
+
+
+def _parse_admin_note_payload(raw_payload: str | None) -> tuple[str, str, str]:
+    raw = str(raw_payload or "")
+    if not raw:
+        return "", "", ""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            note = str(data.get("note") or "")
+            admin_name = str(data.get("admin_name") or "")
+            created_at = str(data.get("created_at") or "")
+            return note, admin_name, created_at
+    except Exception:
+        pass
+    return raw, "", ""
+
+
+async def _show_subscriber_admin_notes(update: Update, data: str) -> None:
+    payload = _parse_card_payload(data, "SUBS_NOTES_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id = payload
+
+    s = get_subscriber_card(subscriber_id)
+    if not s:
+        await update.callback_query.answer("⚠️ מנוי לא נמצא.", show_alert=True)
+        return
+
+    entries = get_subscriber_stats_activity(subscriber_id=subscriber_id, limit=120)
+    notes = [e for e in entries if str(e.get("event_key") or "") == "admin_note"]
+
+    display_name = s.get("full_name") or (f"@{s['username']}" if s.get("username") else str(s["telegram_id"]))
+    lines = [f"📒 <b>הערות מנהל</b>", f"מנוי: <b>{display_name}</b>", ""]
+    if not notes:
+        lines.append("אין הערות מנהל למנוי זה.")
+    else:
+        for idx, n in enumerate(notes[:20], start=1):
+            note_text, admin_name, created_at = _parse_admin_note_payload(n.get("payload"))
+            ts = _fmt_dt(created_at or n.get("created_at"))
+            author = admin_name or "מנהל"
+            snippet = (note_text or "").strip()
+            if len(snippet) > 220:
+                snippet = snippet[:220] + "..."
+            lines.append(f"{idx}. <b>{author}</b> | <i>{ts}</i>")
+            lines.append(snippet or "(ללא תוכן)")
+            lines.append("")
+
+    await _safe_query_edit(
+        update,
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 רענן", callback_data=f"SUBS_NOTES_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("📝 הוסף הערת מנהל", callback_data=f"SUBS_NOTE_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("🧹 איפוס הערות מנהל", callback_data=f"SUBS_NOTES_RESET_CONFIRM_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _confirm_reset_subscriber_admin_notes(update: Update, origin: str, page: int, subscriber_id: int) -> None:
+    await _safe_query_edit(
+        update,
+        text=(
+            "🧹 <b>איפוס הערות מנהל</b>\n\n"
+            "האם למחוק את כל הערות המנהל של מנוי זה?"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, מחק", callback_data=f"SUBS_NOTES_RESET_DO_{origin}_{page}_{subscriber_id}")],
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_NOTES_{origin}_{page}_{subscriber_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _do_reset_subscriber_admin_notes(update: Update, origin: str, page: int, subscriber_id: int) -> None:
+    deleted = clear_subscriber_admin_notes(subscriber_id)
+    await update.callback_query.answer(f"נמחקו {deleted} הערות")
+    await _show_subscriber_admin_notes(update, f"SUBS_NOTES_{origin}_{page}_{subscriber_id}")
 
 
 async def _show_subscriber_media_from_chat(
@@ -3491,10 +3592,22 @@ async def handle_subscriptions_input(
             return
 
         event_key = "warning" if state == _AWAIT_SUB_WARNING else "admin_note"
+        payload_value = text[:1000]
+        if state == _AWAIT_SUB_NOTE:
+            admin_user = update.effective_user
+            payload_value = json.dumps(
+                {
+                    "note": text[:1000],
+                    "admin_id": int(admin_user.id) if admin_user else None,
+                    "admin_name": (admin_user.full_name if admin_user else "") or "",
+                    "created_at": now_il().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                ensure_ascii=False,
+            )
         ok = track_subscriber_activity(
             subscriber_id=subscriber_id,
             event_key=event_key,
-            payload=text[:1000],
+            payload=payload_value,
             increment_basic_activity=False,
         )
 
@@ -3505,6 +3618,9 @@ async def handle_subscriptions_input(
                     await context.bot.send_message(
                         chat_id=subscriber["telegram_id"],
                         text=f"⚠️ אזהרה מצוות הבוט:\n\n{text[:1000]}",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+                        ]),
                     )
                 except Exception:
                     pass

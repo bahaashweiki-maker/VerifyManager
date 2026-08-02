@@ -13,6 +13,7 @@ from repositories.subscribers_repository import (
     set_subscriber_status,
     delete_subscriber,
     add_subscriber_activity_event,
+    delete_subscriber_activity_events_by_key,
 )
 from services.verified_users_service import suspend_user, lift_suspension
 
@@ -125,3 +126,7 @@ def track_subscriber_activity(
         payload=payload,
         increment_basic_activity=increment_basic_activity,
     )
+
+
+def clear_subscriber_admin_notes(subscriber_id: int) -> int:
+    return delete_subscriber_activity_events_by_key(subscriber_id=subscriber_id, event_key="admin_note")
