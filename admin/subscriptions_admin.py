@@ -3513,10 +3513,55 @@ async def handle_subscriber_user_message(
             return False
         return False
 
+    contact_state = context.user_data.get("user_contact_state")
+    if contact_state == "awaiting_contact_category":
+        await update.message.reply_text(
+            "📞 כדי לשלוח פנייה, בחר קודם סוג פנייה מהכפתורים במסך 'צור קשר'.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ]),
+        )
+        return True
+
     media = _extract_message_media(update.message)
     text = (update.message.text or "").strip() if update.message else ""
     if not text and not media:
         return False
+
+    def _is_contact_request_text(message_text: str) -> bool:
+        if not message_text:
+            return False
+        prefixes = (
+            "💬 פנייה כללית\n",
+            "⚠️ תלונה\n",
+            "💡 הצעה\n",
+            "❓ שאלה\n",
+            "🆘 דיווח על תקלה\n",
+        )
+        return message_text.startswith(prefixes)
+
+    try:
+        history = get_subscriber_chat_history(chat["id"])
+        has_pending_contact_request = False
+        for item in reversed(history):
+            role = item.get("sender_role")
+            msg_text = item.get("message_text") or ""
+            if role == "admin":
+                has_pending_contact_request = False
+                break
+            if role == "subscriber" and _is_contact_request_text(msg_text):
+                has_pending_contact_request = True
+                break
+        if has_pending_contact_request:
+            await update.message.reply_text(
+                "⏳ הפנייה שלך בטיפול. עד שמנהל יענה בשיחה, לא ניתן לשלוח הודעה נוספת.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+                ]),
+            )
+            return True
+    except Exception:
+        pass
 
     try:
         if media:

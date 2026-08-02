@@ -782,6 +782,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if action == "home":
         context.user_data[_SUPPORT_CHAT_SUPPRESSED_KEY] = True
+        context.user_data.pop(_CONTACT_STATE_KEY, None)
+        context.user_data.pop(_CONTACT_CATEGORY_KEY, None)
         await render_home(bot, chat_id)
 
     elif action == "page" and len(parts) > 3:
@@ -789,6 +791,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif action == "contact":
         context.user_data.pop(_SUPPORT_CHAT_SUPPRESSED_KEY, None)
+        context.user_data[_CONTACT_STATE_KEY] = "awaiting_contact_category"
+        context.user_data.pop(_CONTACT_CATEGORY_KEY, None)
         subscriber = register_or_touch_subscriber(query.from_user)
         subscriber_id = int(subscriber["id"])
         open_chat = get_open_subscriber_chat(subscriber_id)
@@ -804,6 +808,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 has_open_contact_request = False
 
             if has_open_contact_request:
+                context.user_data.pop(_CONTACT_STATE_KEY, None)
                 await bot.send_message(
                     query.message.chat_id,
                     "⏳ הבקשה שלך כבר בטיפול.\nאנא המתן למענה מהמנהל.",
