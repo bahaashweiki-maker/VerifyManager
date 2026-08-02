@@ -83,6 +83,32 @@ def unsuspend_subscriber(subscriber_id: int, performed_by: int | None = None) ->
     return status_ok and suspension_ok
 
 
+def block_subscriber(subscriber_id: int, performed_by: int | None = None) -> bool:
+    subscriber = get_subscriber_by_id(subscriber_id)
+    if not subscriber:
+        return False
+
+    status_ok = set_subscriber_status(subscriber_id, "blocked")
+    suspension_ok = suspend_user(
+        telegram_id=int(subscriber["telegram_id"]),
+        duration_key="perm",
+        reason="subscriptions_block",
+        created_by=performed_by,
+    )
+    return status_ok and suspension_ok
+
+
+def unblock_subscriber(subscriber_id: int, performed_by: int | None = None) -> bool:
+    _ = performed_by
+    subscriber = get_subscriber_by_id(subscriber_id)
+    if not subscriber:
+        return False
+
+    status_ok = set_subscriber_status(subscriber_id, "active")
+    suspension_ok = lift_suspension(int(subscriber["telegram_id"]))
+    return status_ok and suspension_ok
+
+
 def remove_subscriber(subscriber_id: int) -> bool:
     return delete_subscriber(subscriber_id)
 

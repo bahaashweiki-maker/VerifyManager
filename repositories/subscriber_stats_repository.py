@@ -63,6 +63,26 @@ def get_subscriber_personal_stats(subscriber_id: int) -> dict:
             (subscriber_id,),
         ).fetchone())
 
+        warnings_count = _read_count(conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM subscriber_activity_log
+            WHERE subscriber_id = ?
+              AND event_key = 'warning'
+            """,
+            (subscriber_id,),
+        ).fetchone())
+
+        admin_notes_count = _read_count(conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM subscriber_activity_log
+            WHERE subscriber_id = ?
+              AND event_key = 'admin_note'
+            """,
+            (subscriber_id,),
+        ).fetchone())
+
         baseline = conn.execute(
             """
             SELECT *
@@ -112,6 +132,8 @@ def get_subscriber_personal_stats(subscriber_id: int) -> dict:
             "messages_received_from_subscriber": msgs_from_subscriber_effective,
             "publications_sent": sent_publications_effective,
             "publication_button_clicks": publication_clicks_effective,
+            "warnings_count": warnings_count,
+            "admin_notes_count": admin_notes_count,
         }
 
 
@@ -262,6 +284,76 @@ def get_global_stats_snapshots(limit: int = 30) -> list:
             (limit,),
         )
         return cur.fetchall()
+
+
+def get_live_subscription_system_stats() -> dict:
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+
+        total_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscribers"
+        ).fetchone())
+        active_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscribers WHERE status = 'active'"
+        ).fetchone())
+        suspended_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscribers WHERE status = 'suspended'"
+        ).fetchone())
+
+        total_publications = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_publications"
+        ).fetchone())
+        scheduled_publications = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_publications WHERE status = 'scheduled'"
+        ).fetchone())
+        active_publications = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_publications WHERE status = 'active'"
+        ).fetchone())
+
+        total_private_msgs = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages"
+        ).fetchone())
+        private_msgs_from_admin = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages WHERE sender_role = 'admin'"
+        ).fetchone())
+        private_msgs_from_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages WHERE sender_role IN ('subscriber', 'user')"
+        ).fetchone())
+
+        total_private_chats = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chats"
+        ).fetchone())
+        open_private_chats = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chats WHERE is_open = 1"
+        ).fetchone())
+
+        total_activity_events = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_activity_log"
+        ).fetchone())
+
+        publication_button_clicks = _read_count(conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM subscriber_publication_stats
+            WHERE event_key IN ('click', 'button_click')
+            """
+        ).fetchone())
+
+        return {
+            "total_subscribers": total_subscribers,
+            "active_subscribers": active_subscribers,
+            "suspended_subscribers": suspended_subscribers,
+            "total_publications": total_publications,
+            "scheduled_publications": scheduled_publications,
+            "active_publications": active_publications,
+            "total_private_msgs": total_private_msgs,
+            "private_msgs_from_admin": private_msgs_from_admin,
+            "private_msgs_from_subscribers": private_msgs_from_subscribers,
+            "total_private_chats": total_private_chats,
+            "open_private_chats": open_private_chats,
+            "total_activity_events": total_activity_events,
+            "publication_button_clicks": publication_button_clicks,
+        }
 
 
 def _row_factory(cursor, row):

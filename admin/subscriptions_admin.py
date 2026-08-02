@@ -25,10 +25,12 @@ from services.subscribers_service import (
     get_subscriber_card,
     suspend_subscriber,
     unsuspend_subscriber,
+    block_subscriber,
+    unblock_subscriber,
     track_subscriber_activity,
 )
 from services.subscriber_stats_service import (
-    get_subscription_system_stats,
+    get_subscription_system_stats_live,
     get_subscriber_personal_statistics,
     reset_personal_stats,
 )
@@ -71,6 +73,8 @@ logger = logging.getLogger(__name__)
 _STATE = "subs_state"
 _AWAIT_SEARCH = "SUBS_AWAIT_SEARCH"
 _AWAIT_CHAT_MSG = "SUBS_AWAIT_CHAT_MSG"
+_AWAIT_SUB_WARNING = "SUBS_AWAIT_SUB_WARNING"
+_AWAIT_SUB_NOTE = "SUBS_AWAIT_SUB_NOTE"
 _AWAIT_PUB_CONTENT = "SUBS_AWAIT_PUB_CONTENT"
 _AWAIT_PUB_TARGET_VALUE = "SUBS_AWAIT_PUB_TARGET_VALUE"
 _AWAIT_PUB_BUTTONS = "SUBS_AWAIT_PUB_BUTTONS"
@@ -87,6 +91,9 @@ _SUB_ID = "subs_subscriber_id"
 _SUB_ORIGIN = "subs_origin"
 _SUB_PAGE = "subs_page"
 _SUB_CHAT_ID = "subs_active_chat_id"
+_SUB_WARN_ORIGIN = "subs_warn_origin"
+_SUB_WARN_PAGE = "subs_warn_page"
+_SUB_WARN_ID = "subs_warn_subscriber_id"
 _SUBS_MEDIA_PREVIEW_MSG_ID = "subs_media_preview_msg_id"
 _SUBS_MEDIA_PREVIEW_CHAT_ID = "subs_media_preview_chat_id"
 _SUBS_MEDIA_META_PREFIX = "__SUBS_MEDIA__:"
@@ -248,6 +255,18 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
 
     if data.startswith("SUBS_UNSUSPEND_DO_"):
         return await _do_unsuspend(update, context, data)
+
+    if data.startswith("SUBS_BLOCK_DO_"):
+        return await _do_block(update, context, data)
+
+    if data.startswith("SUBS_UNBLOCK_DO_"):
+        return await _do_unblock(update, context, data)
+
+    if data.startswith("SUBS_WARN_"):
+        return await _prompt_subscriber_warning(update, context, data)
+
+    if data.startswith("SUBS_NOTE_"):
+        return await _prompt_subscriber_note(update, context, data)
 
     if data.startswith("SUBS_SUSPEND_"):
         return await _show_suspend_menu(update, data)
@@ -552,7 +571,9 @@ async def _show_subscriber_card(
         [InlineKeyboardButton("💬 שיחה פרטית", callback_data=f"SUBS_CHAT_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("📜 היסטוריית שיחות", callback_data=f"SUBS_CHAT_HISTORY_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("📊 סטטיסטיקה אישית", callback_data=f"SUBS_STATS_{origin}_{page}_{subscriber_id}")],
-        [InlineKeyboardButton("⛔ השעיית מנוי", callback_data=f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")],
+        [InlineKeyboardButton("⛔ ניהול סטטוס", callback_data=f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")],
+        [InlineKeyboardButton("⚠️ הוסף אזהרה", callback_data=f"SUBS_WARN_{origin}_{page}_{subscriber_id}")],
+        [InlineKeyboardButton("📝 הוסף הערת מנהל", callback_data=f"SUBS_NOTE_{origin}_{page}_{subscriber_id}")],
         [InlineKeyboardButton("⬅️ חזרה", callback_data=back_cb)],
         private_chat_button,
     ])
@@ -3057,7 +3078,9 @@ async def _show_personal_stats(update: Update, data: str) -> None:
         f"📤 הודעות שנשלחו למנוי: <b>{stats.get('messages_sent_to_subscriber', 0)}</b>\n"
         f"📥 הודעות שהתקבלו ממנו: <b>{stats.get('messages_received_from_subscriber', 0)}</b>\n"
         f"📣 פרסומים שנשלחו אליו: <b>{stats.get('publications_sent', 0)}</b>\n"
-        f"🔘 לחיצות על כפתורי פרסום: <b>{stats.get('publication_button_clicks', 0)}</b>"
+        f"🔘 לחיצות על כפתורי פרסום: <b>{stats.get('publication_button_clicks', 0)}</b>\n"
+        f"⚠️ אזהרות: <b>{stats.get('warnings_count', 0)}</b>\n"
+        f"📝 הערות מנהל: <b>{stats.get('admin_notes_count', 0)}</b>"
     )
 
     await _safe_query_edit(
@@ -3209,13 +3232,19 @@ async def _show_suspend_menu(update: Update, data: str) -> None:
         await update.callback_query.answer("⚠️ מנוי לא נמצא.", show_alert=True)
         return
 
-    is_suspended = s.get("status") == "suspended"
-    text = f"⛔ <b>סטטוס נוכחי:</b> {'מושעה' if is_suspended else 'פעיל'}"
+    status = str(s.get("status") or "").lower()
+    is_suspended = status == "suspended"
+    is_blocked = status == "blocked"
+    status_label = "חסום" if is_blocked else ("מושעה" if is_suspended else "פעיל")
+    text = f"⛔ <b>סטטוס נוכחי:</b> {status_label}"
     rows = []
     if is_suspended:
         rows.append([InlineKeyboardButton("✅ ביטול השעיה", callback_data=f"SUBS_UNSUSPEND_DO_{origin}_{page}_{subscriber_id}")])
+    elif is_blocked:
+        rows.append([InlineKeyboardButton("✅ ביטול חסימה", callback_data=f"SUBS_UNBLOCK_DO_{origin}_{page}_{subscriber_id}")])
     else:
         rows.append([InlineKeyboardButton("⛔ השעה מנוי", callback_data=f"SUBS_SUSPEND_DO_{origin}_{page}_{subscriber_id}")])
+        rows.append([InlineKeyboardButton("🚫 חסום מנוי", callback_data=f"SUBS_BLOCK_DO_{origin}_{page}_{subscriber_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")])
 
     await _safe_query_edit(update, text=text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="HTML")
@@ -3276,29 +3305,134 @@ async def _do_unsuspend(update: Update, context: ContextTypes.DEFAULT_TYPE, data
     await _show_suspend_menu(update, f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")
 
 
-async def _show_stats(update: Update) -> None:
-    snapshots = get_subscription_system_stats(limit=1)
-    last = snapshots[0] if snapshots else None
+async def _do_block(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    payload = _parse_card_payload(data, "SUBS_BLOCK_DO_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id = payload
+    ok = block_subscriber(subscriber_id, performed_by=update.callback_query.from_user.id)
+    await update.callback_query.answer("✅ המנוי נחסם." if ok else "❌ לא ניתן לחסום.", show_alert=not ok)
+    if ok:
+        subscriber = get_subscriber_card(subscriber_id)
+        if subscriber:
+            try:
+                await context.bot.send_message(
+                    chat_id=subscriber["telegram_id"],
+                    text=(
+                        "🚫 החשבון שלך נחסם על ידי הנהלת הבוט.\n\n"
+                        "אם לדעתך מדובר בטעות, ניתן לפנות להנהלה."
+                    ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                    ]),
+                )
+            except Exception:
+                pass
+    await _show_suspend_menu(update, f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")
 
-    total_subscribers = (last.get("total_subscribers", 0) if last else 0)
-    active_subscribers = (last.get("active_subscribers", 0) if last else 0)
-    suspended_subscribers = (last.get("suspended_subscribers", 0) if last else 0)
-    total_publications = (last.get("total_publications", 0) if last else 0)
-    total_private_msgs = (last.get("total_private_msgs", 0) if last else 0)
+
+async def _do_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    payload = _parse_card_payload(data, "SUBS_UNBLOCK_DO_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id = payload
+    ok = unblock_subscriber(subscriber_id, performed_by=update.callback_query.from_user.id)
+    await update.callback_query.answer("✅ החסימה בוטלה." if ok else "❌ לא ניתן לבטל חסימה.", show_alert=not ok)
+    if ok:
+        subscriber = get_subscriber_card(subscriber_id)
+        if subscriber:
+            try:
+                await context.bot.send_message(
+                    chat_id=subscriber["telegram_id"],
+                    text=(
+                        "🎉 החסימה הוסרה מהחשבון שלך.\n"
+                        "אפשר לחזור להשתמש בבוט."
+                    ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚀 הפעל בוט מחדש", callback_data="BOT_RESTART_START")],
+                    ]),
+                )
+            except Exception:
+                pass
+    await _show_suspend_menu(update, f"SUBS_SUSPEND_{origin}_{page}_{subscriber_id}")
+
+
+async def _prompt_subscriber_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    payload = _parse_card_payload(data, "SUBS_WARN_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id = payload
+    context.user_data[_STATE] = _AWAIT_SUB_WARNING
+    context.user_data[_SUB_WARN_ORIGIN] = origin
+    context.user_data[_SUB_WARN_PAGE] = page
+    context.user_data[_SUB_WARN_ID] = subscriber_id
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text="⚠️ <b>הוספת אזהרה</b>\n\nשלח את טקסט האזהרה למנוי.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _prompt_subscriber_note(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    payload = _parse_card_payload(data, "SUBS_NOTE_")
+    if payload is None:
+        return await _invalid_callback(update)
+    origin, page, subscriber_id = payload
+    context.user_data[_STATE] = _AWAIT_SUB_NOTE
+    context.user_data[_SUB_WARN_ORIGIN] = origin
+    context.user_data[_SUB_WARN_PAGE] = page
+    context.user_data[_SUB_WARN_ID] = subscriber_id
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _safe_query_edit(
+        update,
+        text="📝 <b>הוספת הערת מנהל</b>\n\nשלח את ההערה הפנימית.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_stats(update: Update) -> None:
+    live = get_subscription_system_stats_live() or {}
+
+    total_subscribers = int(live.get("total_subscribers") or 0)
+    active_subscribers = int(live.get("active_subscribers") or 0)
+    suspended_subscribers = int(live.get("suspended_subscribers") or 0)
+    total_publications = int(live.get("total_publications") or 0)
+    scheduled_publications = int(live.get("scheduled_publications") or 0)
+    active_publications = int(live.get("active_publications") or 0)
+    total_private_msgs = int(live.get("total_private_msgs") or 0)
+    private_msgs_from_admin = int(live.get("private_msgs_from_admin") or 0)
+    private_msgs_from_subscribers = int(live.get("private_msgs_from_subscribers") or 0)
+    total_private_chats = int(live.get("total_private_chats") or 0)
+    open_private_chats = int(live.get("open_private_chats") or 0)
+    total_activity_events = int(live.get("total_activity_events") or 0)
+    publication_button_clicks = int(live.get("publication_button_clicks") or 0)
 
     text = (
         "📊 <b>סטטיסטיקה</b>\n\n"
         f"👥 מנויים: <b>{total_subscribers}</b>\n"
         f"✅ פעילים: <b>{active_subscribers}</b>\n"
         f"⛔ מושעים: <b>{suspended_subscribers}</b>\n"
-        f"📣 פרסומים: <b>{total_publications}</b>\n"
-        f"💬 הודעות פרטיות: <b>{total_private_msgs}</b>"
+        f"📣 פרסומים: <b>{total_publications}</b> (פעילים: {active_publications} | מתוזמנים: {scheduled_publications})\n"
+        f"💬 הודעות פרטיות: <b>{total_private_msgs}</b> (מנהל: {private_msgs_from_admin} | מנויים: {private_msgs_from_subscribers})\n"
+        f"🧵 שיחות פרטיות: <b>{total_private_chats}</b> (פתוחות: {open_private_chats})\n"
+        f"🧾 אירועי פעילות: <b>{total_activity_events}</b>\n"
+        f"🔘 לחיצות כפתורי פרסום: <b>{publication_button_clicks}</b>"
     )
 
     await _safe_query_edit(
         update,
         text=text,
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 רענון", callback_data="SUBS_GLOBAL_STATS")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_MAIN")],
         ]),
         parse_mode="HTML",
@@ -3342,6 +3476,58 @@ async def handle_subscriptions_input(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     state = context.user_data.get(_STATE)
+
+    if state in {_AWAIT_SUB_WARNING, _AWAIT_SUB_NOTE}:
+        text = (update.message.text or "").strip() if update.message else ""
+        if not text:
+            await update.message.reply_text("שלח טקסט תקין.")
+            return
+
+        origin = context.user_data.get(_SUB_WARN_ORIGIN) or "L"
+        page = int(context.user_data.get(_SUB_WARN_PAGE) or 1)
+        subscriber_id = int(context.user_data.get(_SUB_WARN_ID) or 0)
+        if subscriber_id <= 0:
+            context.user_data.pop(_STATE, None)
+            return
+
+        event_key = "warning" if state == _AWAIT_SUB_WARNING else "admin_note"
+        ok = track_subscriber_activity(
+            subscriber_id=subscriber_id,
+            event_key=event_key,
+            payload=text[:1000],
+            increment_basic_activity=False,
+        )
+
+        if ok and state == _AWAIT_SUB_WARNING:
+            subscriber = get_subscriber_card(subscriber_id)
+            if subscriber:
+                try:
+                    await context.bot.send_message(
+                        chat_id=subscriber["telegram_id"],
+                        text=f"⚠️ אזהרה מצוות הבוט:\n\n{text[:1000]}",
+                    )
+                except Exception:
+                    pass
+
+        context.user_data.pop(_STATE, None)
+        context.user_data.pop(_SUB_WARN_ORIGIN, None)
+        context.user_data.pop(_SUB_WARN_PAGE, None)
+        context.user_data.pop(_SUB_WARN_ID, None)
+
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✅ נשמר בהצלחה." if ok else "❌ שמירה נכשלה.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לכרטיס מנוי", callback_data=f"SUBS_CARD_{origin}_{page}_{subscriber_id}")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
 
     if state == _AWAIT_PUB_BTN_LABEL:
         label = (update.message.text or "").strip() if update.message else ""
