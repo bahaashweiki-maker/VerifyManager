@@ -352,16 +352,26 @@ def _build_publication_keyboard(publication_id: int) -> InlineKeyboardMarkup | N
     buttons = get_publication_buttons(publication_id)
     if not buttons:
         return None
-    rows = []
+    rows_by_row_index: dict[int, list[InlineKeyboardButton]] = {}
+    row_order: list[int] = []
     for idx, b in enumerate(buttons, start=1):
         title = str(b.get("title") or "כפתור")
         value = str(b.get("url") or "").strip()
+        row_idx_raw = b.get("row_index")
+        try:
+            row_idx = int(row_idx_raw) if row_idx_raw is not None else idx
+        except Exception:
+            row_idx = idx
+        if row_idx not in rows_by_row_index:
+            rows_by_row_index[row_idx] = []
+            row_order.append(row_idx)
         note_text = decode_publication_note(value)
         if note_text is not None:
-            rows.append([InlineKeyboardButton(title, callback_data=f"SUBS_PUB_NOTE_{publication_id}_{idx}")])
+            rows_by_row_index[row_idx].append(InlineKeyboardButton(title, callback_data=f"SUBS_PUB_NOTE_{publication_id}_{idx}"))
             continue
         if value:
-            rows.append([InlineKeyboardButton(title, url=value)])
+            rows_by_row_index[row_idx].append(InlineKeyboardButton(title, url=value))
+    rows = [rows_by_row_index[r] for r in row_order if rows_by_row_index.get(r)]
     return InlineKeyboardMarkup(rows) if rows else None
 
 

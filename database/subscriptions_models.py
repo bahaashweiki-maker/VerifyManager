@@ -206,6 +206,7 @@ def init_subscriptions_db() -> None:
     _migrate_add_column("subscriber_publications", "total_targets", "INTEGER NOT NULL DEFAULT 0")
     _migrate_add_column("subscriber_publications", "auto_delete_minutes", "INTEGER")
     _migrate_add_column("subscriber_publications", "updated_at", "TEXT DEFAULT (datetime('now'))")
+    _migrate_add_column("subscriber_publication_buttons", "row_index", "INTEGER NOT NULL DEFAULT 0")
 
     logger.info("subscriptions_db initialized")
 

@@ -238,14 +238,18 @@ def replace_publication_buttons(publication_id: int, buttons: list[dict]) -> Non
         for idx, b in enumerate(buttons):
             title = (b.get("title") or "").strip()
             url = (b.get("url") or "").strip()
+            try:
+                row_index = int(b.get("row_index") if b.get("row_index") is not None else idx)
+            except Exception:
+                row_index = idx
             if not title or not url:
                 continue
             conn.execute(
                 """
-                INSERT INTO subscriber_publication_buttons (publication_id, title, url, order_index)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO subscriber_publication_buttons (publication_id, title, url, order_index, row_index)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (publication_id, title, url, idx),
+                (publication_id, title, url, idx, row_index),
             )
         conn.commit()
 
