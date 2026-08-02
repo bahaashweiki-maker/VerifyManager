@@ -426,11 +426,14 @@ async def verify_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=verify["telegram_id"],
                 text=(
-                    "🚫 החשבון שלך נחסם.\n\n"
-                    "לא ניתן להשתמש במערכת בשלב זה.\n\n"
-                    "אם לדעתך מדובר בטעות, ניתן ליצור קשר עם הנהלת המערכת.\n\n"
-                    "תודה שבחרת בנו 🦋"
-                )
+                    "🚫 <b>משתמש יקר/ה, חשבונך נחסם.</b>\n\n"
+                    "לא ניתן להשתמש במערכת בשלב זה.\n"
+                    "אם לדעתך מדובר בטעות, ניתן לפנות אלינו לבירור."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                ]),
+                parse_mode="HTML",
             )
 
             await query.answer(

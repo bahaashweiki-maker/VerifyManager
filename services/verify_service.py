@@ -122,11 +122,17 @@ async def start_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _messages = {
             "pending":  "⏳ *בקשת האימות שלך כבר נמצאת בבדיקה.*\n\nנחזור אליך בהקדם האפשרי.\nתודה על סבלנותך 🙏",
             "approved": "✅ *החשבון שלך כבר מאומת.*\n\nאין צורך להגיש בקשה נוספת.",
-            "blocked":  "🚫 *החשבון שלך חסום.*\n\nלא ניתן להגיש בקשת אימות.",
+            "blocked":  "🚫 *משתמש יקר/ה, חשבונך נחסם.*\n\nלא ניתן להשתמש במערכת בשלב זה.",
         }
-        back_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 חזרה", callback_data="pub:user:home")]
-        ])
+        if existing["status"] == "blocked":
+            back_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                [InlineKeyboardButton("🏠 חזרה", callback_data="pub:user:home")],
+            ])
+        else:
+            back_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 חזרה", callback_data="pub:user:home")]
+            ])
         if is_media_msg:
             try:
                 await query.message.delete()

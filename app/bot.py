@@ -1,4 +1,5 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -7,6 +8,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+import logging
 
 from config.settings import BOT_TOKEN
 
@@ -43,6 +45,30 @@ from database.subscriptions_models import init_subscriptions_db
 from services.admin_service import is_super_admin
 from services.permission_service import has_permission
 from services.subscribers_service import register_or_touch_subscriber
+
+
+logger = logging.getLogger(__name__)
+_conflict_reported = False
+
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _conflict_reported
+    err = getattr(context, "error", None)
+
+    if isinstance(err, Conflict):
+        if not _conflict_reported:
+            _conflict_reported = True
+            logger.error(
+                "Telegram Conflict: מופע אחר משתמש באותו BOT_TOKEN (getUpdates). "
+                "הבוט הנוכחי נעצר כדי למנוע כפילויות."
+            )
+        try:
+            await context.application.stop()
+        except Exception:
+            pass
+        return
+
+    logger.exception("Unhandled bot error", exc_info=err)
 
 
 # ─────────────────────────────────────────
@@ -388,6 +414,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin",  admin))
     app.add_handler(CallbackQueryHandler(button_click))
+    app.add_error_handler(_on_error)
     app.add_handler(
         MessageHandler(
             filters.PHOTO

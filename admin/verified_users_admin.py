@@ -766,11 +766,6 @@ async def _process_add_warning(
         return
 
     caller_id = update.message.from_user.id
-    caller_name = _fmt_admin_name(
-        update.message.from_user.full_name,
-        update.message.from_user.username,
-        caller_id,
-    )
     success   = add_warning(v["telegram_id"], text, created_by=caller_id)
 
     msg = (
@@ -785,7 +780,7 @@ async def _process_add_warning(
             warn_count = get_warnings_count(v["telegram_id"]) or 1
             user_text = (
                 f"⚠️ אזהרה {warn_count} מתוך 3\n\n"
-                f"קיבלת אזהרה מ-{caller_name}.\n\n"
+                "קיבלת אזהרה מצוות הניהול.\n\n"
                 "אנא הקפד לפעול בהתאם לכללי הפלטפורמה."
             )
             await context.bot.send_message(chat_id=v["telegram_id"], text=user_text)
@@ -897,11 +892,6 @@ async def _execute_suspend(
         return
 
     caller_id = update.callback_query.from_user.id
-    caller_name = _fmt_admin_name(
-        update.callback_query.from_user.full_name,
-        update.callback_query.from_user.username,
-        caller_id,
-    )
     success   = suspend_user(v["telegram_id"], dur, created_by=caller_id)
     label     = SUSPEND_LABELS.get(dur, dur)
 
@@ -912,8 +902,7 @@ async def _execute_suspend(
                 chat_id=v["telegram_id"],
                 text=(
                     f"⏸️ <b>חשבונך הושעה.</b>\n\n"
-                    f"משך: <b>{label}</b>\n\n"
-                    f"המנהל המטפל: <b>{caller_name}</b>"
+                    f"משך: <b>{label}</b>"
                 ),
                 parse_mode="HTML",
             )
@@ -982,11 +971,6 @@ async def _execute_block(
 ) -> None:
     v         = get_verified_user_by_id(vid)
     caller_id = update.callback_query.from_user.id
-    caller_name = _fmt_admin_name(
-        update.callback_query.from_user.full_name,
-        update.callback_query.from_user.username,
-        caller_id,
-    )
     success   = block_verified_user(vid, performed_by=caller_id)
     await update.callback_query.answer(
         "🚫 המשתמש נחסם." if success else "❌ שגיאה.", show_alert=not success
@@ -996,9 +980,12 @@ async def _execute_block(
             await context.bot.send_message(
                 chat_id=v["telegram_id"],
                 text=(
-                    "🚫 <b>חשבונך נחסם.</b>\n\n"
-                    f"המנהל המטפל: <b>{caller_name}</b>"
+                    "🚫 <b>משתמש יקר, חשבונך נחסם על ידי צוות הבוט.</b>\n\n"
+                    "נא לפנות להנהלה לבירורים נוספים."
                 ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                ]),
                 parse_mode="HTML",
             )
         except Exception:
@@ -1033,9 +1020,13 @@ async def _execute_unblock(
             await context.bot.send_message(
                 chat_id=v["telegram_id"],
                 text=(
-                    "✅ <b>חסימתך שוחררה.</b>\n\n"
-                    "אתה יכול להמשיך להשתמש במערכת."
+                    "✅ <b>משתמש יקר/ה, חסימתך שוחררה.</b>\n\n"
+                    "עכשיו אתה יכול להפעיל את הבוט מחדש ולהיות חלק מאיתנו.\n"
+                    "נא הקפד לשמור על כללי הקהילה והבוט."
                 ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 חזרה לדף הראשי", callback_data="RESTART_BOT_PENDING")],
+                ]),
                 parse_mode="HTML",
             )
         except Exception:
