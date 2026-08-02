@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta
 from typing import Optional
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ContextTypes
 
-from database.database import get_connection
+from database.database import get_connection, now_il
 from repositories.subscriber_publications_repository import (
         get_publication_delivery_by_id,
     create_publication_delivery,
@@ -324,12 +326,95 @@ def _resolve_recipients(target_type: str, target_value: str | None) -> list[tupl
     ]
 
 
+def encode_publication_note(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return "note:b64:"
+    encoded = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+    return f"note:b64:{encoded}"
+
+
+def decode_publication_note(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    prefix = "note:b64:"
+    if not raw.startswith(prefix):
+        return None
+    payload = raw[len(prefix):]
+    if not payload:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8")
+    except Exception:
+        return None
+
+
 def _build_publication_keyboard(publication_id: int) -> InlineKeyboardMarkup | None:
     buttons = get_publication_buttons(publication_id)
     if not buttons:
         return None
-    rows = [[InlineKeyboardButton(str(b.get("title") or "קישור"), url=str(b.get("url") or ""))] for b in buttons if b.get("url")]
+    rows = []
+    for idx, b in enumerate(buttons, start=1):
+        title = str(b.get("title") or "כפתור")
+        value = str(b.get("url") or "").strip()
+        note_text = decode_publication_note(value)
+        if note_text is not None:
+            rows.append([InlineKeyboardButton(title, callback_data=f"SUBS_PUB_NOTE_{publication_id}_{idx}")])
+            continue
+        if value:
+            rows.append([InlineKeyboardButton(title, url=value)])
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def handle_publication_note_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    query = update.callback_query
+    if not query or not query.data:
+        return False
+
+    data = query.data
+    if data == "SUBS_PUB_NOTE_BACK":
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return True
+
+    if not data.startswith("SUBS_PUB_NOTE_"):
+        return False
+
+    payload = data[len("SUBS_PUB_NOTE_"):]
+    parts = payload.split("_", 1)
+    if len(parts) != 2:
+        await query.answer("כפתור לא תקין", show_alert=True)
+        return True
+
+    try:
+        publication_id = int(parts[0])
+        button_index = int(parts[1])
+    except Exception:
+        await query.answer("כפתור לא תקין", show_alert=True)
+        return True
+
+    buttons = get_publication_buttons(publication_id)
+    if not (1 <= button_index <= len(buttons)):
+        await query.answer("הערה לא נמצאה", show_alert=True)
+        return True
+
+    button = buttons[button_index - 1]
+    note_text = decode_publication_note(button.get("url"))
+    if note_text is None:
+        await query.answer("זהו כפתור קישור", show_alert=True)
+        return True
+
+    await query.answer()
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=note_text or "(ללא תוכן)",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data="SUBS_PUB_NOTE_BACK")],
+        ]),
+    )
+    return True
 
 
 async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
@@ -393,7 +478,7 @@ async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
 
     is_recurring = int(pub.get("is_recurring") or 0) == 1
     if is_recurring:
-        next_run_at = compute_next_run(pub, from_time=datetime.utcnow())
+        next_run_at = compute_next_run(pub, from_time=now_il().replace(tzinfo=None))
         update_publication(publication_id, status="active", next_run_at=next_run_at)
     else:
         update_publication(publication_id, status="sent", next_run_at=None)

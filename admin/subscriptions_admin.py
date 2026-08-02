@@ -46,7 +46,9 @@ from services.subscriber_publication_service import (
     count_publication_recipients,
     create_publication_delivery_record,
     create_publication_record,
+    decode_publication_note,
     dispatch_publication,
+    encode_publication_note,
     get_delivery_record,
     get_publication,
     list_available_publication_permissions,
@@ -72,6 +74,8 @@ _AWAIT_CHAT_MSG = "SUBS_AWAIT_CHAT_MSG"
 _AWAIT_PUB_CONTENT = "SUBS_AWAIT_PUB_CONTENT"
 _AWAIT_PUB_TARGET_VALUE = "SUBS_AWAIT_PUB_TARGET_VALUE"
 _AWAIT_PUB_BUTTONS = "SUBS_AWAIT_PUB_BUTTONS"
+_AWAIT_PUB_BTN_LABEL = "SUBS_AWAIT_PUB_BTN_LABEL"
+_AWAIT_PUB_BTN_VALUE = "SUBS_AWAIT_PUB_BTN_VALUE"
 _AWAIT_PUB_SEARCH = "SUBS_AWAIT_PUB_SEARCH"
 _AWAIT_PUB_SCHEDULE = "SUBS_AWAIT_PUB_SCHEDULE"
 _AWAIT_PUB_AUTO_DELETE = "SUBS_AWAIT_PUB_AUTO_DELETE"
@@ -94,6 +98,9 @@ _PUB_PREVIEW_MSG_ID = "subs_pub_preview_msg_id"
 _PUB_PREVIEW_CHAT_ID = "subs_pub_preview_chat_id"
 _PUB_PREVIEW_CONFIRMED = "subs_pub_preview_confirmed"
 _PUB_EDIT_ID = "subs_pub_edit_id"
+_PUB_BTN_MODE = "subs_pub_btn_mode"
+_PUB_BTN_EDIT_INDEX = "subs_pub_btn_edit_index"
+_PUB_BTN_LABEL_TMP = "subs_pub_btn_label_tmp"
 _PUB_SCHEDULE_JOBS: dict[int, str] = {}
 _PUB_RECURRING_JOBS: dict[int, str] = {}
 _PUB_DELETE_JOBS: dict[int, str] = {}
@@ -261,7 +268,50 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         return await _prompt_publication_content(update, context)
 
     if data == "SUBS_PUB_EDIT_BUTTONS":
-        return await _prompt_publication_buttons(update, context)
+        return await _show_publication_buttons_menu(update, context)
+
+    if data == "SUBS_PUB_NOTE_DRAFT_BACK":
+        return await _show_publication_preview(update, context)
+
+    if data.startswith("SUBS_PUB_NOTE_DRAFT_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_NOTE_DRAFT_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _show_publication_note_from_draft(update, context, idx)
+
+    if data == "SUBS_PUB_BTN_ADD_URL":
+        return await _start_publication_button_add(update, context, mode="add_url")
+
+    if data == "SUBS_PUB_BTN_ADD_NOTE":
+        return await _start_publication_button_add(update, context, mode="add_note")
+
+    if data == "SUBS_PUB_BTN_BACK":
+        return await _show_publication_preview(update, context)
+
+    if data.startswith("SUBS_PUB_BTN_EDIT_NOTE_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_NOTE_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit(update, context, idx)
+
+    if data.startswith("SUBS_PUB_BTN_EDIT_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        buttons = draft.get("buttons") or []
+        if 1 <= idx <= len(buttons):
+            value = str((buttons[idx - 1] or {}).get("url") or "")
+            if decode_publication_note(value) is not None:
+                return await _start_publication_button_edit(update, context, idx)
+        await update.callback_query.answer("עריכת כפתור URL אינה זמינה", show_alert=True)
+        return await _show_publication_buttons_menu(update, context)
+
+    if data.startswith("SUBS_PUB_BTN_DELETE_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_DELETE_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _delete_publication_button(update, context, idx)
 
     if data == "SUBS_PUB_SEND_NOW":
         return await _send_publication_now(update, context)
@@ -315,6 +365,12 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         if pub_id is None:
             return await _invalid_callback(update)
         return await _delete_publication(update, context, pub_id)
+
+    if data.startswith("SUBS_PUB_PURGE_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_PURGE_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _purge_sent_publication_messages(update, context, pub_id)
 
     if data.startswith("SUBS_PUB_RUN_"):
         pub_id = _parse_positive_int(data[len("SUBS_PUB_RUN_"):])
@@ -510,6 +566,9 @@ def _clear_publication_draft(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(_PUB_TARGET_OPTIONS, None)
     context.user_data.pop(_PUB_PREVIEW_CONFIRMED, None)
     context.user_data.pop(_PUB_EDIT_ID, None)
+    context.user_data.pop(_PUB_BTN_MODE, None)
+    context.user_data.pop(_PUB_BTN_EDIT_INDEX, None)
+    context.user_data.pop(_PUB_BTN_LABEL_TMP, None)
 
 
 async def _clear_publication_preview_message(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -649,12 +708,44 @@ def _publication_preview_actions_keyboard() -> InlineKeyboardMarkup:
 def _draft_publication_keyboard(draft: dict) -> InlineKeyboardMarkup | None:
     buttons = draft.get("buttons") or []
     rows = []
-    for b in buttons:
+    for idx, b in enumerate(buttons, start=1):
         title = str(b.get("title") or "").strip()
         url = str(b.get("url") or "").strip()
-        if title and url.startswith(("http://", "https://", "tg://")):
+        if not title or not url:
+            continue
+        if decode_publication_note(url) is not None:
+            rows.append([InlineKeyboardButton(title, callback_data=f"SUBS_PUB_NOTE_DRAFT_{idx}")])
+            continue
+        if url.startswith(("http://", "https://", "tg://")):
             rows.append([InlineKeyboardButton(title, url=url)])
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def _show_publication_note_from_draft(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("הערה לא נמצאה", show_alert=True)
+        return
+
+    btn = buttons[idx - 1] or {}
+    title = str(btn.get("title") or f"כפתור {idx}")
+    note_text = decode_publication_note(str(btn.get("url") or ""))
+    if note_text is None:
+        await update.callback_query.answer("זהו כפתור קישור", show_alert=True)
+        return
+
+    await _safe_query_edit(
+        update,
+        text=(
+            f"📝 <b>{title}</b>\n\n"
+            f"{note_text or '(ללא תוכן)'}"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזור", callback_data="SUBS_PUB_NOTE_DRAFT_BACK")],
+        ]),
+        parse_mode="HTML",
+    )
 
 
 async def _send_real_publication_preview(context: ContextTypes.DEFAULT_TYPE, chat_id: int, draft: dict) -> None:
@@ -752,25 +843,114 @@ async def _prompt_publication_content(update: Update, context: ContextTypes.DEFA
 
 
 async def _prompt_publication_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data[_STATE] = _AWAIT_PUB_BUTTONS
-    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
-    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    await _show_publication_buttons_menu(update, context)
+
+
+def _publication_buttons_manage_keyboard(buttons: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, btn in enumerate(buttons, start=1):
+        title = str(btn.get("title") or f"כפתור {idx}")
+        value = str(btn.get("url") or "")
+        note_text = decode_publication_note(value)
+        if note_text is not None:
+            short = (title[:22] + "…") if len(title) > 22 else title
+            rows.append([
+                InlineKeyboardButton(f"✏️ 📝 {short}", callback_data=f"SUBS_PUB_BTN_EDIT_NOTE_{idx}"),
+                InlineKeyboardButton(f"🗑️ 📝 {short}", callback_data=f"SUBS_PUB_BTN_DELETE_{idx}"),
+            ])
+        else:
+            short = (title[:22] + "…") if len(title) > 22 else title
+            rows.append([
+                InlineKeyboardButton(f"🗑️ 🔗 {short}", callback_data=f"SUBS_PUB_BTN_DELETE_{idx}"),
+            ])
+
+    rows.append([InlineKeyboardButton("➕ הוסף כפתור קישור", callback_data="SUBS_PUB_BTN_ADD_URL")])
+    rows.append([InlineKeyboardButton("➕ הוסף כפתור הערה", callback_data="SUBS_PUB_BTN_ADD_NOTE")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_BTN_BACK")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_publication_buttons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+
+    lines = ["🔘 <b>ניהול כפתורי פרסום</b>", ""]
+    if not buttons:
+        lines.append("אין כפתורים כרגע.")
+    else:
+        for idx, btn in enumerate(buttons, start=1):
+            title = str(btn.get("title") or f"כפתור {idx}")
+            value = str(btn.get("url") or "")
+            if decode_publication_note(value) is not None:
+                lines.append(f"{idx}. 📝 {title}")
+            else:
+                lines.append(f"{idx}. 🔗 {title}")
+
     await _safe_query_edit(
         update,
-        text=(
-            "🔘 <b>כפתורי פרסום</b>\n\n"
-            "שלח כל כפתור בשורה בפורמט:\n"
-            "כותרת | https://example.com\n\n"
-            "דוגמה:\n"
-            "אתר החברה | https://example.com\n"
-            "וואטסאפ | https://wa.me/123456\n\n"
-            "שלח '-' כדי לנקות כפתורים."
-        ),
+        text="\n".join(lines),
+        reply_markup=_publication_buttons_manage_keyboard(buttons),
+        parse_mode="HTML",
+    )
+
+
+async def _start_publication_button_add(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    context.user_data[_STATE] = _AWAIT_PUB_BTN_LABEL
+    context.user_data[_PUB_BTN_MODE] = mode
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+    context.user_data.pop(_PUB_BTN_LABEL_TMP, None)
+    context.user_data.pop(_PUB_BTN_EDIT_INDEX, None)
+
+    await _safe_query_edit(
+        update,
+        text="כתוב את שם הכפתור.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ חזרה לתצוגה מקדימה", callback_data="SUBS_PUB_PREVIEW")],
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def _start_publication_button_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+    value = str((buttons[idx - 1] or {}).get("url") or "")
+    if decode_publication_note(value) is None:
+        await update.callback_query.answer("עריכה זמינה רק להערה", show_alert=True)
+        return await _show_publication_buttons_menu(update, context)
+
+    context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
+    context.user_data[_PUB_BTN_MODE] = "edit_note"
+    context.user_data[_PUB_BTN_EDIT_INDEX] = idx
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+
+    await _safe_query_edit(
+        update,
+        text="✏️ <b>עריכת כפתור הערה</b>\n\nשלח טקסט הערה חדש.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _delete_publication_button(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = list(draft.get("buttons") or [])
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+    buttons.pop(idx - 1)
+    draft["buttons"] = buttons
+    context.user_data[_PUB_DRAFT] = draft
+    context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+    await update.callback_query.answer("הכפתור נמחק")
+    await _show_publication_buttons_menu(update, context)
 
 
 async def _show_publication_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1576,6 +1756,8 @@ async def _show_publication_details(update: Update, context: ContextTypes.DEFAUL
     if status == "canceled" and int(p.get("is_recurring") or 0) == 1:
         rows.append([InlineKeyboardButton("▶️ הפעלה מחדש", callback_data=f"SUBS_PUB_RESUME_{publication_id}")])
     rows.append([InlineKeyboardButton("🧹 מחיקה אוטומטית", callback_data=f"SUBS_PUB_AUTODEL_{publication_id}")])
+    if int(p.get("sent_success_count") or 0) > 0:
+        rows.append([InlineKeyboardButton("🗑️ מחיקה מיידית של פרסום שנשלח", callback_data=f"SUBS_PUB_PURGE_{publication_id}")])
     rows.append([InlineKeyboardButton("📈 סטטיסטיקה", callback_data=f"SUBS_PUB_STATS_VIEW_{publication_id}")])
     rows.append([InlineKeyboardButton("🗑️ מחיקה", callback_data=f"SUBS_PUB_DELETE_{publication_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_LIST")])
@@ -1587,6 +1769,44 @@ async def _delete_publication(update: Update, context: ContextTypes.DEFAULT_TYPE
     ok = remove_publication(publication_id)
     await update.callback_query.answer("נמחק" if ok else "מחיקה נכשלה", show_alert=not ok)
     await _show_publications_list(update, context, page=1)
+
+
+async def _purge_sent_publication_messages(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    deliveries = list_pending_delivery_records(publication_id)
+    if not deliveries:
+        await update.callback_query.answer("אין הודעות פעילות למחיקה", show_alert=True)
+        return await _show_publication_details(update, context, publication_id)
+
+    deleted = 0
+    failed = 0
+    for d in deliveries:
+        delivery_id = int(d.get("id") or 0)
+        chat_id = int(d.get("telegram_id") or 0)
+        message_id = int(d.get("message_id") or 0)
+        if delivery_id <= 0 or chat_id <= 0 or message_id <= 0:
+            if delivery_id > 0:
+                mark_delivery_status(delivery_id, "failed")
+                _PUB_DELETE_JOBS.pop(delivery_id, None)
+            failed += 1
+            continue
+
+        if context.job_queue:
+            job_name = f"pub_del_{delivery_id}"
+            for job in context.job_queue.jobs():
+                if job.name == job_name:
+                    job.schedule_removal()
+            _PUB_DELETE_JOBS.pop(delivery_id, None)
+
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            mark_delivery_status(delivery_id, "deleted")
+            deleted += 1
+        except Exception:
+            mark_delivery_status(delivery_id, "failed")
+            failed += 1
+
+    await update.callback_query.answer(f"נמחקו: {deleted} | נכשלו: {failed}")
+    await _show_publication_details(update, context, publication_id)
 
 
 async def _run_publication_now(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
@@ -1859,11 +2079,12 @@ async def _process_publication_auto_delete(context: ContextTypes.DEFAULT_TYPE, p
     if not pub:
         return
     minutes = int(pub.get("auto_delete_minutes") or 0)
-    if minutes <= 0:
-        return
-    delete_at_dt = now_il().replace(tzinfo=None) + timedelta(minutes=minutes)
-    delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
-    update_publication_record(publication_id, auto_delete_at=delete_at)
+    delete_at_dt = None
+    delete_at = None
+    if minutes > 0:
+        delete_at_dt = now_il().replace(tzinfo=None) + timedelta(minutes=minutes)
+        delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+        update_publication_record(publication_id, auto_delete_at=delete_at)
     for item in deliveries:
         delivery_id = create_publication_delivery_record(
             publication_id=publication_id,
@@ -1872,7 +2093,7 @@ async def _process_publication_auto_delete(context: ContextTypes.DEFAULT_TYPE, p
             message_id=int(item.get("message_id") or 0),
             delete_at=delete_at,
         )
-        if delivery_id > 0:
+        if delivery_id > 0 and delete_at_dt is not None:
             await _schedule_publication_delete_job(context, delivery_id, delete_at_dt)
 
 
@@ -2967,15 +3188,110 @@ async def handle_subscriptions_input(
 ) -> None:
     state = context.user_data.get(_STATE)
 
+    if state == _AWAIT_PUB_BTN_LABEL:
+        label = (update.message.text or "").strip() if update.message else ""
+        if not label:
+            await update.message.reply_text("כתוב שם כפתור.")
+            return
+        context.user_data[_PUB_BTN_LABEL_TMP] = label[:50]
+        context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
+        mode = context.user_data.get(_PUB_BTN_MODE)
+        prompt = "שלח קישור מלא (https://...)." if mode == "add_url" else "שלח טקסט הערה."
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        if chat_id and msg_id:
+            await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=prompt,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+                ]),
+                parse_mode="HTML",
+            )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
+    if state == _AWAIT_PUB_BTN_VALUE:
+        value = (update.message.text or "").strip() if update.message else ""
+        if not value:
+            await update.message.reply_text("שלח ערך תקין.")
+            return
+
+        mode = context.user_data.get(_PUB_BTN_MODE)
+        draft = context.user_data.get(_PUB_DRAFT) or {}
+        buttons = list(draft.get("buttons") or [])
+
+        if mode == "add_url":
+            if not value.startswith(("http://", "https://", "tg://")):
+                await update.message.reply_text("קישור לא תקין. שלח קישור שמתחיל ב-http:// או https:// או tg://")
+                return
+            label = str(context.user_data.get(_PUB_BTN_LABEL_TMP) or "קישור")
+            buttons.append({"title": label, "url": value[:300]})
+        elif mode == "add_note":
+            label = str(context.user_data.get(_PUB_BTN_LABEL_TMP) or "הערה")
+            buttons.append({"title": label, "url": encode_publication_note(value)})
+        elif mode == "edit_note":
+            idx = int(context.user_data.get(_PUB_BTN_EDIT_INDEX) or 0)
+            if not (1 <= idx <= len(buttons)):
+                await update.message.reply_text("כפתור לעריכה לא נמצא.")
+                return
+            current = buttons[idx - 1] or {}
+            buttons[idx - 1] = {
+                "title": str(current.get("title") or f"כפתור {idx}"),
+                "url": encode_publication_note(value),
+            }
+        else:
+            context.user_data.pop(_STATE, None)
+            return
+
+        draft["buttons"] = buttons
+        context.user_data[_PUB_DRAFT] = draft
+        context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+        context.user_data.pop(_STATE, None)
+        context.user_data.pop(_PUB_BTN_MODE, None)
+        context.user_data.pop(_PUB_BTN_LABEL_TMP, None)
+        context.user_data.pop(_PUB_BTN_EDIT_INDEX, None)
+
+        chat_id = context.user_data.get(_CHAT_ID)
+        msg_id = context.user_data.get(_MSG_ID)
+        if chat_id and msg_id:
+            sent = await _safe_bot_edit(
+                context,
+                chat_id=chat_id,
+                message_id=msg_id,
+                text="🔘 <b>ניהול כפתורי פרסום</b>",
+                reply_markup=_publication_buttons_manage_keyboard(buttons),
+                parse_mode="HTML",
+            )
+            if not sent:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="🔘 <b>ניהול כפתורי פרסום</b>",
+                    reply_markup=_publication_buttons_manage_keyboard(buttons),
+                    parse_mode="HTML",
+                )
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
     if state == _AWAIT_PUB_CONTENT:
         draft = context.user_data.get(_PUB_DRAFT) or {}
         text = (update.message.text or "").strip() if update.message else ""
         media = _extract_message_media(update.message)
-        if not text and not media:
+        caption = str((media or {}).get("caption") or "").strip()
+        content_text = text or caption
+        if not content_text and not media:
             await update.message.reply_text("שלח טקסט ו/או מדיה לפרסום.")
             return
 
-        draft["content_text"] = text
+        draft["content_text"] = content_text
         if media:
             draft["media_type"] = media.get("media_type")
             draft["file_id"] = media.get("file_id")

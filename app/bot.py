@@ -16,6 +16,7 @@ from services.verify_service import (
     start_verify,
     process_verify,
 )
+from services.subscriber_publication_service import handle_publication_note_callback
 
 from app.engine.page_engine import PageEngine
 from app.engine.publishing_renderer import render_home, handle_user_nav, handle_contact_input
@@ -210,6 +211,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return await start(update, context)
+
+    if data.startswith("SUBS_PUB_NOTE_") or data == "SUBS_PUB_NOTE_BACK":
+        handled = await handle_publication_note_callback(update, context)
+        if handled:
+            return
 
     # 1. pub:user:* — handle_user_nav קורא ל-answer() בעצמו, חייב להיות לפני query.answer()
     if data.startswith("pub:user:"):
