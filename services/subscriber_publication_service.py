@@ -402,14 +402,7 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
             return True
 
         await query.answer()
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        try:
-            await _send_publication_to_chat(context.bot, publication_id, query.message.chat_id)
-        except Exception:
-            pass
+        await _restore_publication_message_in_place(query, publication_id)
         return True
 
     if not data.startswith("SUBS_PUB_NOTE_"):
@@ -516,6 +509,36 @@ async def _send_publication_to_chat(bot: Bot, publication_id: int, chat_id: int)
             return sent_message
 
     return await bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+
+
+async def _restore_publication_message_in_place(query, publication_id: int) -> None:
+    pub = get_publication_by_id(publication_id)
+    if not pub:
+        return
+
+    keyboard = _build_publication_keyboard(publication_id)
+    media_type = (pub.get("media_type") or "").strip()
+    content = (pub.get("content_text") or "").strip()
+
+    # Publications with media+keyboard are sent with caption for these media types,
+    # so restore by editing caption on the same message.
+    if media_type in {"photo", "video", "animation", "document", "audio", "voice"}:
+        try:
+            await query.message.edit_caption(
+                caption=content or None,
+                reply_markup=keyboard,
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        await query.message.edit_text(
+            text=content or "",
+            reply_markup=keyboard,
+        )
+    except Exception:
+        pass
 
 
 async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
