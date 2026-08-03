@@ -402,6 +402,19 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
             return True
 
         await query.answer()
+        pub = get_publication_by_id(publication_id) or {}
+        media_type = (pub.get("media_type") or "").strip()
+        if media_type in {"photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker"}:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            try:
+                await _send_publication_to_chat(context.bot, publication_id, query.message.chat_id)
+            except Exception:
+                pass
+            return True
+
         await _restore_publication_message_in_place(query, publication_id)
         return True
 
@@ -448,6 +461,32 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
         record_publication_stat(publication_id, subscriber_id, "button_click")
     except Exception:
         pass
+
+    # For media messages, keep the original publication (image/video/etc.) untouched,
+    # and show note content as a text-only overlay message.
+    has_media_message = bool(
+        getattr(query.message, "photo", None)
+        or getattr(query.message, "video", None)
+        or getattr(query.message, "animation", None)
+        or getattr(query.message, "document", None)
+        or getattr(query.message, "audio", None)
+        or getattr(query.message, "voice", None)
+    )
+
+    if has_media_message:
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=note_text or "(ללא תוכן)",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_PUB_NOTE_BACK_{publication_id}")],
+            ]),
+        )
+        return True
 
     await query.answer()
     back_cb = f"SUBS_PUB_NOTE_BACK_{publication_id}"
