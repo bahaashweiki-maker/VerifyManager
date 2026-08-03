@@ -212,7 +212,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return await start(update, context)
 
-    if data.startswith("SUBS_PUB_NOTE_") or data == "SUBS_PUB_NOTE_BACK":
+    if (
+        data == "SUBS_PUB_NOTE_BACK"
+        or (data.startswith("SUBS_PUB_NOTE_") and not data.startswith("SUBS_PUB_NOTE_DRAFT_"))
+    ):
         handled = await handle_publication_note_callback(update, context)
         if handled:
             return

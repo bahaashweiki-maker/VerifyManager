@@ -1461,6 +1461,7 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
             "• בעוד שעתיים\n"
             "• בעוד יום\n\n"
             "או שלח תזמון ידני:\n"
+            "• כל 5 דקות / כל 10 דקות / כל 1 דקה\n"
             "• חד-פעמי: YYYY-MM-DD HH:MM או DD/MM/YYYY HH:MM\n"
             "• יומי: כל יום HH:MM\n"
             "• שבועי: כל יום שישי HH:MM\n"
@@ -1471,6 +1472,8 @@ async def _prompt_publication_schedule(update: Update, context: ContextTypes.DEF
             [InlineKeyboardButton("+10 דקות", callback_data="SUBS_PUB_DELAY_10m")],
             [InlineKeyboardButton("+2 שעות", callback_data="SUBS_PUB_DELAY_2h")],
             [InlineKeyboardButton("+1 יום", callback_data="SUBS_PUB_DELAY_1d")],
+            [InlineKeyboardButton("🔁 כל 5 דקות", callback_data="SUBS_PUB_RECUR_5")],
+            [InlineKeyboardButton("🔁 כל 10 דקות", callback_data="SUBS_PUB_RECUR_10")],
             [InlineKeyboardButton("🔁 כל שעה", callback_data="SUBS_PUB_RECUR_60")],
             [InlineKeyboardButton("🔁 כל שעתיים", callback_data="SUBS_PUB_RECUR_120")],
             [InlineKeyboardButton("🔁 כל 6 שעות", callback_data="SUBS_PUB_RECUR_360")],
@@ -2140,8 +2143,14 @@ async def _schedule_one_time_job(context: ContextTypes.DEFAULT_TYPE, publication
     _PUB_SCHEDULE_JOBS[publication_id] = job.name
 
 
-async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int, run_at: datetime) -> None:
-    await _cancel_publication_jobs(context, publication_id)
+async def _schedule_recurring_job(
+    context: ContextTypes.DEFAULT_TYPE,
+    publication_id: int,
+    run_at: datetime,
+    *,
+    cancel_delete_jobs: bool = True,
+) -> None:
+    await _cancel_publication_jobs(context, publication_id, cancel_delete_jobs=cancel_delete_jobs)
     if not context.job_queue:
         return
     run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
@@ -2154,22 +2163,28 @@ async def _schedule_recurring_job(context: ContextTypes.DEFAULT_TYPE, publicatio
     _PUB_RECURRING_JOBS[publication_id] = job.name
 
 
-async def _cancel_publication_jobs(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+async def _cancel_publication_jobs(
+    context: ContextTypes.DEFAULT_TYPE,
+    publication_id: int,
+    *,
+    cancel_delete_jobs: bool = True,
+) -> None:
     if context.job_queue:
         for job in context.job_queue.jobs():
             if job.name in {f"pub_once_{publication_id}", f"pub_repeat_{publication_id}"}:
                 job.schedule_removal()
 
-        deliveries = list_pending_delivery_records(publication_id)
-        for d in deliveries:
-            delivery_id = int(d.get("id") or 0)
-            if delivery_id <= 0:
-                continue
-            job_name = f"pub_del_{delivery_id}"
-            for job in context.job_queue.jobs():
-                if job.name == job_name:
-                    job.schedule_removal()
-            _PUB_DELETE_JOBS.pop(delivery_id, None)
+        if cancel_delete_jobs:
+            deliveries = list_pending_delivery_records(publication_id)
+            for d in deliveries:
+                delivery_id = int(d.get("id") or 0)
+                if delivery_id <= 0:
+                    continue
+                job_name = f"pub_del_{delivery_id}"
+                for job in context.job_queue.jobs():
+                    if job.name == job_name:
+                        job.schedule_removal()
+                _PUB_DELETE_JOBS.pop(delivery_id, None)
     _PUB_SCHEDULE_JOBS.pop(publication_id, None)
     _PUB_RECURRING_JOBS.pop(publication_id, None)
 
@@ -2208,7 +2223,7 @@ async def _publication_job_callback(job_context) -> None:
             next_run_dt = datetime.strptime(next_run_raw, "%Y-%m-%d %H:%M:%S")
         except Exception:
             return
-        await _schedule_recurring_job(job_context, publication_id, next_run_dt)
+        await _schedule_recurring_job(job_context, publication_id, next_run_dt, cancel_delete_jobs=False)
 
 
 async def _bootstrap_publication_delete_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2321,6 +2336,34 @@ def _next_weekday_time(now: datetime, weekday: int, hour: int, minute: int) -> d
 
 def _parse_manual_recurrence(raw: str, now: datetime) -> dict | None:
     text = " ".join(raw.strip().lower().split())
+
+    m_interval_he = re.fullmatch(r"כל\s+(\d{1,5})\s*(?:דקה|דקות|דק|דק׳)", text)
+    if m_interval_he:
+        every_minutes = int(m_interval_he.group(1))
+        if every_minutes > 0:
+            return {
+                "repeat_every_minutes": every_minutes,
+                "recurrence_type": "interval",
+                "recurrence_weekdays": None,
+                "recurrence_day_of_month": None,
+                "recurrence_time": None,
+                "first_run_dt": now + timedelta(minutes=every_minutes),
+            }
+        return None
+
+    m_interval_en = re.fullmatch(r"(?:every|each)\s+(\d{1,5})\s*(?:minute|minutes|min)", text)
+    if m_interval_en:
+        every_minutes = int(m_interval_en.group(1))
+        if every_minutes > 0:
+            return {
+                "repeat_every_minutes": every_minutes,
+                "recurrence_type": "interval",
+                "recurrence_weekdays": None,
+                "recurrence_day_of_month": None,
+                "recurrence_time": None,
+                "first_run_dt": now + timedelta(minutes=every_minutes),
+            }
+        return None
 
     m_daily = re.fullmatch(r"(?:כל יום|daily)\s+(\d{1,2}):(\d{2})", text)
     if m_daily:
@@ -4334,6 +4377,11 @@ async def handle_subscriber_user_message(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> bool:
     if not update.message or not update.effective_user:
+        return False
+
+    # After /start (or restart), support chat forwarding is intentionally suppressed
+    # until the user explicitly enters the "contact" flow again.
+    if context.user_data.get("support_chat_suppressed"):
         return False
 
     from services.subscribers_service import get_subscriber_card_by_telegram_id

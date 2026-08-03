@@ -230,6 +230,7 @@ async def handle_contact_input(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop(_CONTACT_CATEGORY_KEY, None)
     context.user_data.pop(_CONTACT_SUBSCRIBER_ID_KEY, None)
     context.user_data.pop(_CONTACT_CHAT_ID_KEY, None)
+    context.user_data[_SUPPORT_CHAT_SUPPRESSED_KEY] = True
 
     await update.message.reply_text(
         "✅ הפנייה נשלחה בהצלחה. צוות ההנהלה יחזור אליך בהקדם.",
