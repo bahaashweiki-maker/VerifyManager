@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-from database.database import IL_TZ, now_il
+from database.database import IL_TZ, get_connection, now_il
 
 from services.subscribers_service import (
     list_subscribers_page,
@@ -913,6 +913,41 @@ async def _prompt_publication_buttons(update: Update, context: ContextTypes.DEFA
     await _show_publication_buttons_menu(update, context)
 
 
+async def _show_publication_buttons_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    text: str,
+    reply_markup: InlineKeyboardMarkup,
+    parse_mode: str = "HTML",
+) -> None:
+    try:
+        await _safe_query_edit(
+            update,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+        return
+    except Exception:
+        pass
+
+    try:
+        await update.callback_query.answer()
+    except Exception:
+        pass
+
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+    except Exception:
+        pass
+
+
 def _publication_buttons_manage_keyboard(buttons: list[dict]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for idx, btn in enumerate(buttons, start=1):
@@ -954,8 +989,9 @@ async def _show_publication_buttons_menu(update: Update, context: ContextTypes.D
             else:
                 lines.append(f"{idx}. 🔗 {title}")
 
-    await _safe_query_edit(
+    await _show_publication_buttons_screen(
         update,
+        context,
         text="\n".join(lines),
         reply_markup=_publication_buttons_manage_keyboard(buttons),
         parse_mode="HTML",
@@ -998,8 +1034,9 @@ async def _start_publication_button_edit(update: Update, context: ContextTypes.D
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
     context.user_data[_MSG_ID] = update.callback_query.message.message_id
 
-    await _safe_query_edit(
+    await _show_publication_buttons_screen(
         update,
+        context,
         text="✏️ <b>עריכת כפתור הערה</b>\n\nשלח טקסט הערה חדש.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
@@ -1028,8 +1065,9 @@ async def _start_publication_button_edit_url(update: Update, context: ContextTyp
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
     context.user_data[_MSG_ID] = update.callback_query.message.message_id
 
-    await _safe_query_edit(
+    await _show_publication_buttons_screen(
         update,
+        context,
         text="✏️ <b>עריכת כפתור קישור</b>\n\nשלח שם חדש לכפתור.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
@@ -1225,6 +1263,7 @@ async def _handle_publication_auto_delete(update: Update, context: ContextTypes.
         pub_id = int(context.user_data.get(_PUB_EDIT_ID) or 0)
         if pub_id > 0:
             update_publication_record(pub_id, auto_delete_minutes=minutes)
+            await _apply_auto_delete_to_pending_deliveries(context, pub_id, minutes)
         context.user_data.pop(_STATE, None)
         return await _show_publication_preview(update, context)
 
@@ -1240,6 +1279,7 @@ async def _handle_publication_auto_delete(update: Update, context: ContextTypes.
             await update.callback_query.answer("פרסום לא תקין", show_alert=True)
             return
         update_publication_record(pub_id, auto_delete_minutes=minutes)
+        await _apply_auto_delete_to_pending_deliveries(context, pub_id, minutes)
         await update.callback_query.answer("נשמר")
         return await _show_publication_details(update, context, pub_id)
 
@@ -1267,6 +1307,46 @@ async def _handle_publication_auto_delete(update: Update, context: ContextTypes.
         ]),
         parse_mode="HTML",
     )
+
+
+async def _apply_auto_delete_to_pending_deliveries(
+    context: ContextTypes.DEFAULT_TYPE,
+    publication_id: int,
+    minutes: int,
+) -> None:
+    if publication_id <= 0 or minutes <= 0:
+        return
+
+    pending = list_pending_delivery_records(publication_id)
+    if not pending:
+        return
+
+    delete_at_dt = now_il().replace(tzinfo=None) + timedelta(minutes=minutes)
+    delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE subscriber_publication_deliveries
+                SET delete_at = ?
+                WHERE publication_id = ?
+                  AND status = 'pending'
+                  AND (delete_at IS NULL OR TRIM(delete_at) = '')
+                """,
+                (delete_at, publication_id),
+            )
+            conn.commit()
+    except Exception:
+        return
+
+    update_publication_record(publication_id, auto_delete_at=delete_at)
+
+    for row in pending:
+        delivery_id = int(row.get("id") or 0)
+        if delivery_id <= 0:
+            continue
+        await _schedule_publication_delete_job(context, delivery_id, delete_at_dt)
 
 
 async def _set_publication_target(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
@@ -1395,6 +1475,7 @@ async def _send_publication_now(update: Update, context: ContextTypes.DEFAULT_TY
         target_value=payload["target_value"],
         status="sending",
         created_by=update.callback_query.from_user.id,
+        auto_delete_minutes=int(draft.get("auto_delete_minutes") or 0),
         buttons=payload["buttons"],
     )
     if pub_id <= 0:
@@ -2122,6 +2203,11 @@ async def _bootstrap_publication_jobs(context: ContextTypes.DEFAULT_TYPE) -> Non
                     update_publication_record(pub_id, next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"))
                 await _schedule_recurring_job(context, pub_id, next_run_dt)
     await _bootstrap_publication_delete_jobs(context)
+
+
+async def bootstrap_publication_jobs_on_startup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Initialize scheduled/recurring publication jobs after bot startup."""
+    await _bootstrap_publication_jobs(context)
 
 
 async def _run_publication_job(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:

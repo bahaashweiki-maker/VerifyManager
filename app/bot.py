@@ -32,6 +32,7 @@ from admin.subscriptions_admin import (
     subscriptions_admin_route,
     handle_subscriptions_input,
     handle_subscriber_user_message,
+    bootstrap_publication_jobs_on_startup,
 )
 from admin.verified_users_admin import (
     verified_users_route,
@@ -50,6 +51,13 @@ from services.subscribers_service import register_or_touch_subscriber
 
 logger = logging.getLogger(__name__)
 _conflict_reported = False
+
+
+async def _startup_bootstrap_publications(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        await bootstrap_publication_jobs_on_startup(context)
+    except Exception:
+        logger.exception("Failed to bootstrap publication jobs on startup")
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -438,6 +446,13 @@ def main():
             media_handler,
         )
     )
+
+    if app.job_queue:
+        app.job_queue.run_once(
+            _startup_bootstrap_publications,
+            when=1,
+            name="subs_publication_bootstrap",
+        )
 
     print("🤖 Bot is running...")
     app.run_polling()
