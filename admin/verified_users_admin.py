@@ -907,10 +907,17 @@ async def _execute_suspend(
             await context.bot.send_message(
                 chat_id=v["telegram_id"],
                 text=(
-                    f"⏸️ <b>חשבונך הושעה.</b>\n\n"
-                    f"משך: <b>{label}</b>"
+                    "⛔ הודעה חשובה\n\n"
+                    "שלום,\n\n"
+                    "חשבונך הושעה באופן זמני על ידי צוות ההנהלה.\n\n"
+                    "במהלך תקופת ההשעיה לא תהיה אפשרות להשתמש בשירותים המיועדים למשתמשים מאומתים.\n\n"
+                    "אם לדעתך מדובר בטעות או שברצונך לקבל מידע נוסף, ניתן ליצור קשר עם צוות ההנהלה.\n\n"
+                    "בברכה,\n"
+                    "צוות ההנהלה"
                 ),
-                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                ]),
             )
         except Exception:
             pass
@@ -934,10 +941,17 @@ async def _execute_unsuspend(
         await context.bot.send_message(
             chat_id=v["telegram_id"],
             text=(
-                "🔓 <b>ההשעיה שלך בוטלה.</b>\n\n"
-                "אתה יכול להמשיך להשתמש במערכת."
+                "✅ הודעה חשובה\n\n"
+                "שלום,\n\n"
+                "אנו שמחים לעדכן כי ההשעיה על חשבונך בוטלה.\n\n"
+                "חשבונך פעיל מחדש, וכעת ניתן להשתמש שוב בכל שירותי המשתמשים המאומתים.\n\n"
+                "תודה על שיתוף הפעולה.\n\n"
+                "בברכה,\n"
+                "צוות ההנהלה"
             ),
-            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 הפעל בוט מחדש", callback_data="RESTART_BOT_PENDING")],
+            ]),
         )
     except Exception:
         pass

@@ -4379,11 +4379,6 @@ async def handle_subscriber_user_message(
     if not update.message or not update.effective_user:
         return False
 
-    # After /start (or restart), support chat forwarding is intentionally suppressed
-    # until the user explicitly enters the "contact" flow again.
-    if context.user_data.get("support_chat_suppressed"):
-        return False
-
     from services.subscribers_service import get_subscriber_card_by_telegram_id
 
     subscriber = get_subscriber_card_by_telegram_id(update.effective_user.id)
@@ -4395,6 +4390,17 @@ async def handle_subscriber_user_message(
         if context.user_data.get("support_chat_suppressed"):
             return False
         return False
+
+    history = []
+    try:
+        history = get_subscriber_chat_history(chat["id"])
+    except Exception:
+        history = []
+
+    if context.user_data.get("support_chat_suppressed"):
+        has_admin_reply = any((item or {}).get("sender_role") == "admin" for item in history)
+        if not has_admin_reply:
+            return False
 
     contact_state = context.user_data.get("user_contact_state")
     if contact_state == "awaiting_contact_category":
@@ -4424,7 +4430,6 @@ async def handle_subscriber_user_message(
         return message_text.startswith(prefixes)
 
     try:
-        history = get_subscriber_chat_history(chat["id"])
         has_pending_contact_request = False
         for item in reversed(history):
             role = item.get("sender_role")
