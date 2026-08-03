@@ -328,6 +328,30 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
     if data == "SUBS_PUB_BTN_BACK":
         return await _show_publication_preview(update, context)
 
+    if data.startswith("SUBS_PUB_BTN_EDIT_NOTE_NAME_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_NOTE_NAME_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit_note_name(update, context, idx)
+
+    if data.startswith("SUBS_PUB_BTN_EDIT_NOTE_VALUE_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_NOTE_VALUE_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit_note_value(update, context, idx)
+
+    if data.startswith("SUBS_PUB_BTN_EDIT_URL_NAME_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_URL_NAME_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit_url_name(update, context, idx)
+
+    if data.startswith("SUBS_PUB_BTN_EDIT_URL_VALUE_"):
+        idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_URL_VALUE_"):])
+        if idx is None:
+            return await _invalid_callback(update)
+        return await _start_publication_button_edit_url_value(update, context, idx)
+
     if data == "SUBS_PUB_BTN_ROW_SAME":
         return await _finalize_publication_button_add(update, context, same_row=True)
 
@@ -338,13 +362,13 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_NOTE_"):])
         if idx is None:
             return await _invalid_callback(update)
-        return await _start_publication_button_edit(update, context, idx)
+        return await _show_publication_button_edit_choice(update, context, idx, kind="note")
 
     if data.startswith("SUBS_PUB_BTN_URL_"):
         idx = _parse_positive_int(data[len("SUBS_PUB_BTN_URL_"):])
         if idx is None:
             return await _invalid_callback(update)
-        return await _start_publication_button_edit_url(update, context, idx)
+        return await _show_publication_button_edit_choice(update, context, idx, kind="url")
 
     if data.startswith("SUBS_PUB_BTN_EDIT_"):
         idx = _parse_positive_int(data[len("SUBS_PUB_BTN_EDIT_"):])
@@ -355,8 +379,8 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
         if 1 <= idx <= len(buttons):
             value = str((buttons[idx - 1] or {}).get("url") or "")
             if decode_publication_note(value) is not None:
-                return await _start_publication_button_edit(update, context, idx)
-            return await _start_publication_button_edit_url(update, context, idx)
+                return await _show_publication_button_edit_choice(update, context, idx, kind="note")
+            return await _show_publication_button_edit_choice(update, context, idx, kind="url")
         await update.callback_query.answer("כפתור לעריכה לא נמצא", show_alert=True)
         return
 
@@ -1017,19 +1041,76 @@ async def _start_publication_button_add(update: Update, context: ContextTypes.DE
     )
 
 
-async def _start_publication_button_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+async def _show_publication_button_edit_choice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    idx: int,
+    *,
+    kind: str,
+) -> None:
     draft = context.user_data.get(_PUB_DRAFT) or {}
     buttons = draft.get("buttons") or []
     if not (1 <= idx <= len(buttons)):
         await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
         return
-    value = str((buttons[idx - 1] or {}).get("url") or "")
-    if decode_publication_note(value) is None:
-        await update.callback_query.answer("עריכה זמינה רק להערה", show_alert=True)
-        return await _show_publication_buttons_menu(update, context)
+
+    title = str((buttons[idx - 1] or {}).get("title") or f"כפתור {idx}")
+    if kind == "note":
+        choices = [
+            [InlineKeyboardButton("✏️ שינוי שם", callback_data=f"SUBS_PUB_BTN_EDIT_NOTE_NAME_{idx}")],
+            [InlineKeyboardButton("📝 שינוי תוכן", callback_data=f"SUBS_PUB_BTN_EDIT_NOTE_VALUE_{idx}")],
+        ]
+        text = f"✏️ <b>עריכת כפתור הערה</b>\n\nכפתור: <b>{title}</b>\n\nבחר מה לשנות:"
+    else:
+        choices = [
+            [InlineKeyboardButton("✏️ שינוי שם", callback_data=f"SUBS_PUB_BTN_EDIT_URL_NAME_{idx}")],
+            [InlineKeyboardButton("🔗 שינוי קישור", callback_data=f"SUBS_PUB_BTN_EDIT_URL_VALUE_{idx}")],
+        ]
+        text = f"✏️ <b>עריכת כפתור קישור</b>\n\nכפתור: <b>{title}</b>\n\nבחר מה לשנות:"
+
+    choices.append([InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")])
+    await _show_publication_buttons_screen(
+        update,
+        context,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(choices),
+        parse_mode="HTML",
+    )
+
+
+async def _start_publication_button_edit_note_name(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+
+    context.user_data[_STATE] = _AWAIT_PUB_BTN_LABEL
+    context.user_data[_PUB_BTN_MODE] = "edit_note_name"
+    context.user_data[_PUB_BTN_EDIT_INDEX] = idx
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+
+    await _show_publication_buttons_screen(
+        update,
+        context,
+        text="✏️ <b>עריכת כפתור הערה</b>\n\nשלח שם חדש לכפתור.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _start_publication_button_edit_note_value(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
 
     context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
-    context.user_data[_PUB_BTN_MODE] = "edit_note"
+    context.user_data[_PUB_BTN_MODE] = "edit_note_value"
     context.user_data[_PUB_BTN_EDIT_INDEX] = idx
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
     context.user_data[_MSG_ID] = update.callback_query.message.message_id
@@ -1045,21 +1126,16 @@ async def _start_publication_button_edit(update: Update, context: ContextTypes.D
     )
 
 
-async def _start_publication_button_edit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+async def _start_publication_button_edit_url_name(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
     draft = context.user_data.get(_PUB_DRAFT) or {}
     buttons = draft.get("buttons") or []
     if not (1 <= idx <= len(buttons)):
         await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
         return
 
-    value = str((buttons[idx - 1] or {}).get("url") or "")
-    if decode_publication_note(value) is not None:
-        await update.callback_query.answer("זה כפתור הערה", show_alert=True)
-        return await _show_publication_buttons_menu(update, context)
-
     current = buttons[idx - 1] or {}
     context.user_data[_STATE] = _AWAIT_PUB_BTN_LABEL
-    context.user_data[_PUB_BTN_MODE] = "edit_url"
+    context.user_data[_PUB_BTN_MODE] = "edit_url_name"
     context.user_data[_PUB_BTN_EDIT_INDEX] = idx
     context.user_data[_PUB_BTN_LABEL_TMP] = str(current.get("title") or f"כפתור {idx}")[:50]
     context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
@@ -1074,6 +1150,40 @@ async def _start_publication_button_edit_url(update: Update, context: ContextTyp
         ]),
         parse_mode="HTML",
     )
+
+
+async def _start_publication_button_edit_url_value(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    draft = context.user_data.get(_PUB_DRAFT) or {}
+    buttons = draft.get("buttons") or []
+    if not (1 <= idx <= len(buttons)):
+        await update.callback_query.answer("כפתור לא נמצא", show_alert=True)
+        return
+
+    current = buttons[idx - 1] or {}
+    context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
+    context.user_data[_PUB_BTN_MODE] = "edit_url_value"
+    context.user_data[_PUB_BTN_EDIT_INDEX] = idx
+    context.user_data[_PUB_BTN_LABEL_TMP] = str(current.get("title") or f"כפתור {idx}")[:50]
+    context.user_data[_CHAT_ID] = update.callback_query.message.chat_id
+    context.user_data[_MSG_ID] = update.callback_query.message.message_id
+
+    await _show_publication_buttons_screen(
+        update,
+        context,
+        text="✏️ <b>עריכת כפתור קישור</b>\n\nשלח קישור חדש.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_PUB_EDIT_BUTTONS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _start_publication_button_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    await _show_publication_button_edit_choice(update, context, idx, kind="note")
+
+
+async def _start_publication_button_edit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
+    await _show_publication_button_edit_choice(update, context, idx, kind="url")
 
 
 async def _delete_publication_button(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int) -> None:
@@ -3779,10 +3889,58 @@ async def handle_subscriptions_input(
         if not label:
             await update.message.reply_text("כתוב שם כפתור.")
             return
-        context.user_data[_PUB_BTN_LABEL_TMP] = label[:50]
-        context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
         mode = context.user_data.get(_PUB_BTN_MODE)
-        prompt = "שלח קישור מלא (https://...)." if mode in {"add_url", "edit_url"} else "שלח טקסט הערה."
+        context.user_data[_PUB_BTN_LABEL_TMP] = label[:50]
+
+        if mode in {"edit_note_name", "edit_url_name"}:
+            draft = context.user_data.get(_PUB_DRAFT) or {}
+            buttons = list(draft.get("buttons") or [])
+            idx = int(context.user_data.get(_PUB_BTN_EDIT_INDEX) or 0)
+            if not (1 <= idx <= len(buttons)):
+                await update.message.reply_text("כפתור לעריכה לא נמצא.")
+                return
+
+            current = buttons[idx - 1] or {}
+            buttons[idx - 1] = {
+                "title": label[:50],
+                "url": str(current.get("url") or ""),
+                "row_index": int(current.get("row_index") or idx),
+            }
+            draft["buttons"] = buttons
+            context.user_data[_PUB_DRAFT] = draft
+            context.user_data[_PUB_PREVIEW_CONFIRMED] = False
+            context.user_data.pop(_STATE, None)
+            context.user_data.pop(_PUB_BTN_MODE, None)
+            context.user_data.pop(_PUB_BTN_EDIT_INDEX, None)
+            context.user_data.pop(_PUB_BTN_LABEL_TMP, None)
+            context.user_data.pop(_PUB_BTN_VALUE_TMP, None)
+
+            chat_id = context.user_data.get(_CHAT_ID)
+            msg_id = context.user_data.get(_MSG_ID)
+            if chat_id and msg_id:
+                sent = await _safe_bot_edit(
+                    context,
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text="🔘 <b>ניהול כפתורי פרסום</b>",
+                    reply_markup=_publication_buttons_manage_keyboard(buttons),
+                    parse_mode="HTML",
+                )
+                if not sent:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="🔘 <b>ניהול כפתורי פרסום</b>",
+                        reply_markup=_publication_buttons_manage_keyboard(buttons),
+                        parse_mode="HTML",
+                    )
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            return
+
+        context.user_data[_STATE] = _AWAIT_PUB_BTN_VALUE
+        prompt = "שלח קישור מלא (https://...)." if mode == "edit_url_name" or mode == "add_url" else "שלח טקסט הערה."
         chat_id = context.user_data.get(_CHAT_ID)
         msg_id = context.user_data.get(_MSG_ID)
         if chat_id and msg_id:
@@ -3841,7 +3999,7 @@ async def handle_subscriptions_input(
             except Exception:
                 pass
             return
-        elif mode == "edit_url":
+        elif mode == "edit_url_value":
             if not value.startswith(("http://", "https://", "tg://")):
                 await update.message.reply_text("קישור לא תקין. שלח קישור שמתחיל ב-http:// או https:// או tg://")
                 return
@@ -3882,7 +4040,7 @@ async def handle_subscriptions_input(
             except Exception:
                 pass
             return
-        elif mode == "edit_note":
+        elif mode == "edit_note_value":
             idx = int(context.user_data.get(_PUB_BTN_EDIT_INDEX) or 0)
             if not (1 <= idx <= len(buttons)):
                 await update.message.reply_text("כפתור לעריכה לא נמצא.")
@@ -3893,6 +4051,9 @@ async def handle_subscriptions_input(
                 "url": encode_publication_note(value),
                 "row_index": int(current.get("row_index") or idx),
             }
+        elif mode in {"edit_url_name", "edit_note_name"}:
+            # These modes finalize during the label step.
+            return
         else:
             context.user_data.pop(_STATE, None)
             return

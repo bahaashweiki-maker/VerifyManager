@@ -389,6 +389,24 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
             pass
         return True
 
+    if data.startswith("SUBS_PUB_NOTE_BACK_"):
+        try:
+            publication_id = int(data[len("SUBS_PUB_NOTE_BACK_"):])
+        except Exception:
+            await query.answer("כפתור לא תקין", show_alert=True)
+            return True
+
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        try:
+            await _send_publication_to_chat(context.bot, publication_id, query.message.chat_id)
+        except Exception:
+            pass
+        return True
+
     if not data.startswith("SUBS_PUB_NOTE_"):
         return False
 
@@ -434,14 +452,65 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
         pass
 
     await query.answer()
-    await context.bot.send_message(
-        chat_id=query.message.chat_id,
-        text=note_text or "(ללא תוכן)",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ חזור", callback_data="SUBS_PUB_NOTE_BACK")],
-        ]),
-    )
+    back_cb = f"SUBS_PUB_NOTE_BACK_{publication_id}"
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ חזור", callback_data=back_cb)],
+    ])
+    try:
+        await query.message.edit_text(
+            text=note_text or "(ללא תוכן)",
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        try:
+            await query.message.edit_caption(
+                caption=note_text or "(ללא תוכן)",
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=note_text or "(ללא תוכן)",
+                reply_markup=reply_markup,
+            )
     return True
+
+
+async def _send_publication_to_chat(bot: Bot, publication_id: int, chat_id: int):
+    pub = get_publication_by_id(publication_id)
+    if not pub:
+        return None
+
+    keyboard = _build_publication_keyboard(publication_id)
+    media_type = (pub.get("media_type") or "").strip()
+    file_id = (pub.get("file_id") or "").strip()
+    content = (pub.get("content_text") or "").strip()
+
+    if media_type and file_id:
+        if media_type == "photo":
+            return await bot.send_photo(chat_id=chat_id, photo=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "video":
+            return await bot.send_video(chat_id=chat_id, video=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "animation":
+            return await bot.send_animation(chat_id=chat_id, animation=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "document":
+            return await bot.send_document(chat_id=chat_id, document=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "audio":
+            return await bot.send_audio(chat_id=chat_id, audio=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "voice":
+            return await bot.send_voice(chat_id=chat_id, voice=file_id, caption=content or None, reply_markup=keyboard)
+        if media_type == "video_note":
+            sent_message = await bot.send_video_note(chat_id=chat_id, video_note=file_id)
+            if content or keyboard:
+                return await bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+            return sent_message
+        if media_type == "sticker":
+            sent_message = await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+            if content or keyboard:
+                return await bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
+            return sent_message
+
+    return await bot.send_message(chat_id=chat_id, text=content or "", reply_markup=keyboard)
 
 
 async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
