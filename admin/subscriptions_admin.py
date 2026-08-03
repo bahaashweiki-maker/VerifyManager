@@ -34,6 +34,7 @@ from services.subscriber_stats_service import (
     get_subscription_system_stats_live,
     get_subscriber_stats_activity,
     get_subscriber_personal_statistics,
+    reset_global_stats_actions,
     reset_personal_stats,
 )
 from services.subscriber_chat_service import (
@@ -62,6 +63,7 @@ from services.subscriber_publication_service import (
     list_publications_paged,
     mark_delivery_status,
     publication_stats,
+    reset_publication_stats,
     replace_publication_buttons_record,
     remove_publication,
     update_publication_record,
@@ -482,8 +484,26 @@ async def subscriptions_admin_route(update: Update, context: ContextTypes.DEFAUL
             return await _invalid_callback(update)
         return await _show_publication_stats_for_one(update, context, pub_id)
 
+    if data.startswith("SUBS_PUB_STATS_RESET_CONFIRM_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_STATS_RESET_CONFIRM_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _confirm_reset_publication_stats(update, pub_id)
+
+    if data.startswith("SUBS_PUB_STATS_RESET_DO_"):
+        pub_id = _parse_positive_int(data[len("SUBS_PUB_STATS_RESET_DO_"):])
+        if pub_id is None:
+            return await _invalid_callback(update)
+        return await _do_reset_publication_stats(update, context, pub_id)
+
     if data == "SUBS_GLOBAL_STATS":
         return await _show_stats(update)
+
+    if data == "SUBS_GLOBAL_STATS_RESET_CONFIRM":
+        return await _confirm_reset_global_stats(update)
+
+    if data == "SUBS_GLOBAL_STATS_RESET_DO":
+        return await _do_reset_global_stats(update)
 
 
 async def _invalid_callback(update: Update) -> None:
@@ -2255,10 +2275,13 @@ async def _show_publication_stats_for_one(update: Update, context: ContextTypes.
     stats = publication_stats(publication_id)
     pub = stats.get("publication") or {}
     events = stats.get("events") or {}
+    sent_success_effective = int(stats.get("sent_success_effective") or 0)
+    sent_fail_effective = int(stats.get("sent_fail_effective") or 0)
     pending_targets = count_publication_recipients(str(pub.get("target_type") or "all"), pub.get("target_value")) if str(pub.get("status") or "") in {"scheduled", "active"} else 0
     raw_title = str(pub.get("title") or "").strip()
     content_text = " ".join(str(pub.get("content_text") or "").split())
     display_name = raw_title if raw_title and raw_title not in {"פרסום", "פרסום ללא כותרת"} else (content_text[:36] if content_text else "פרסום")
+    button_clicks = int(events.get("button_click", 0)) + int(events.get("click", 0))
     text = (
         f"📈 <b>סטטיסטיקה לפרסום</b>\n"
         f"שם: <b>{display_name}</b>\n\n"
@@ -2268,13 +2291,15 @@ async def _show_publication_stats_for_one(update: Update, context: ContextTypes.
         f"ממתין: <b>{pending_targets}</b>\n"
         f"נשלחו: <b>{events.get('sent', 0)}</b>\n"
         f"נכשלו: <b>{events.get('failed', 0)}</b>\n"
-        f"מונה הצלחות: <b>{pub.get('sent_success_count') or 0}</b>\n"
-        f"מונה כישלונות: <b>{pub.get('sent_fail_count') or 0}</b>"
+        f"לחיצות כפתורים: <b>{button_clicks}</b>\n"
+        f"מונה הצלחות: <b>{sent_success_effective}</b>\n"
+        f"מונה כישלונות: <b>{sent_fail_effective}</b>"
     )
     await _safe_query_edit(
         update,
         text=text,
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧹 איפוס סטטיסטיקה", callback_data=f"SUBS_PUB_STATS_RESET_CONFIRM_{publication_id}")],
             [InlineKeyboardButton("⬅️ חזרה לפרסום", callback_data=f"SUBS_PUB_VIEW_{publication_id}")],
         ]),
         parse_mode="HTML",
@@ -3562,6 +3587,50 @@ async def _do_reset_personal_stats(update: Update, origin: str, page: int, subsc
     await _show_personal_stats(update, f"SUBS_STATS_{origin}_{page}_{subscriber_id}")
 
 
+async def _confirm_reset_global_stats(update: Update) -> None:
+    await _safe_query_edit(
+        update,
+        text=(
+            "🧹 <b>איפוס סטטיסטיקה כללית (פעולות)</b>\n\n"
+            "האיפוס יאפס רק מוני פעולות (הודעות, אירועים, לחיצות).\n"
+            "הוא לא מוחק מנויים, ולא משנה סטטוס פעיל/מושעה/חסום."
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, אפס", callback_data="SUBS_GLOBAL_STATS_RESET_DO")],
+            [InlineKeyboardButton("❌ ביטול", callback_data="SUBS_GLOBAL_STATS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _do_reset_global_stats(update: Update) -> None:
+    ok = reset_global_stats_actions()
+    await update.callback_query.answer("✅ סטטיסטיקת הפעולות אופסה." if ok else "❌ איפוס נכשל.", show_alert=not ok)
+    await _show_stats(update)
+
+
+async def _confirm_reset_publication_stats(update: Update, publication_id: int) -> None:
+    await _safe_query_edit(
+        update,
+        text=(
+            f"🧹 <b>איפוס סטטיסטיקה לפרסום #{publication_id}</b>\n\n"
+            "האיפוס יאפס רק מוני ביצועים ולחיצות של הפרסום הזה.\n"
+            "הוא לא מוחק פרסום ולא משנה את היעד או התוכן."
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ כן, אפס", callback_data=f"SUBS_PUB_STATS_RESET_DO_{publication_id}")],
+            [InlineKeyboardButton("❌ ביטול", callback_data=f"SUBS_PUB_STATS_VIEW_{publication_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _do_reset_publication_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    ok = reset_publication_stats(publication_id)
+    await update.callback_query.answer("✅ סטטיסטיקת הפרסום אופסה." if ok else "❌ איפוס נכשל.", show_alert=not ok)
+    await _show_publication_stats_for_one(update, context, publication_id)
+
+
 async def _show_suspend_menu(update: Update, data: str) -> None:
     payload = _parse_card_payload(data, "SUBS_SUSPEND_")
     if payload is None:
@@ -3745,6 +3814,7 @@ async def _show_stats(update: Update) -> None:
     total_subscribers = int(live.get("total_subscribers") or 0)
     active_subscribers = int(live.get("active_subscribers") or 0)
     suspended_subscribers = int(live.get("suspended_subscribers") or 0)
+    blocked_subscribers = int(live.get("blocked_subscribers") or 0)
     total_publications = int(live.get("total_publications") or 0)
     scheduled_publications = int(live.get("scheduled_publications") or 0)
     active_publications = int(live.get("active_publications") or 0)
@@ -3761,6 +3831,7 @@ async def _show_stats(update: Update) -> None:
         f"👥 מנויים: <b>{total_subscribers}</b>\n"
         f"✅ פעילים: <b>{active_subscribers}</b>\n"
         f"⛔ מושעים: <b>{suspended_subscribers}</b>\n"
+        f"🚫 חסומים: <b>{blocked_subscribers}</b>\n"
         f"📣 פרסומים: <b>{total_publications}</b> (פעילים: {active_publications} | מתוזמנים: {scheduled_publications})\n"
         f"💬 הודעות פרטיות: <b>{total_private_msgs}</b> (מנהל: {private_msgs_from_admin} | מנויים: {private_msgs_from_subscribers})\n"
         f"🧵 שיחות פרטיות: <b>{total_private_chats}</b> (פתוחות: {open_private_chats})\n"
@@ -3773,6 +3844,7 @@ async def _show_stats(update: Update) -> None:
         text=text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 רענון", callback_data="SUBS_GLOBAL_STATS")],
+            [InlineKeyboardButton("🧹 איפוס פעולות", callback_data="SUBS_GLOBAL_STATS_RESET_CONFIRM")],
             [InlineKeyboardButton("⬅️ חזרה", callback_data="SUBS_MAIN")],
         ]),
         parse_mode="HTML",

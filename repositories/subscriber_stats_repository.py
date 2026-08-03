@@ -3,6 +3,24 @@ from __future__ import annotations
 from database.database import get_connection
 
 
+def _ensure_system_stats_reset_baseline_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriber_system_stats_reset_baselines (
+            id                           INTEGER PRIMARY KEY CHECK (id = 1),
+            total_private_msgs_base      INTEGER NOT NULL DEFAULT 0,
+            private_msgs_admin_base      INTEGER NOT NULL DEFAULT 0,
+            private_msgs_subscriber_base INTEGER NOT NULL DEFAULT 0,
+            total_private_chats_base     INTEGER NOT NULL DEFAULT 0,
+            open_private_chats_base      INTEGER NOT NULL DEFAULT 0,
+            total_activity_events_base   INTEGER NOT NULL DEFAULT 0,
+            publication_clicks_base      INTEGER NOT NULL DEFAULT 0,
+            reset_at                     TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+
 def get_subscriber_personal_stats(subscriber_id: int) -> dict:
     with get_connection() as conn:
         conn.row_factory = _row_factory
@@ -289,6 +307,7 @@ def get_global_stats_snapshots(limit: int = 30) -> list:
 def get_live_subscription_system_stats() -> dict:
     with get_connection() as conn:
         conn.row_factory = _row_factory
+        _ensure_system_stats_reset_baseline_table(conn)
 
         total_subscribers = _read_count(conn.execute(
             "SELECT COUNT(*) AS total FROM subscribers"
@@ -298,6 +317,9 @@ def get_live_subscription_system_stats() -> dict:
         ).fetchone())
         suspended_subscribers = _read_count(conn.execute(
             "SELECT COUNT(*) AS total FROM subscribers WHERE status = 'suspended'"
+        ).fetchone())
+        blocked_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscribers WHERE status = 'blocked'"
         ).fetchone())
 
         total_publications = _read_count(conn.execute(
@@ -339,10 +361,27 @@ def get_live_subscription_system_stats() -> dict:
             """
         ).fetchone())
 
+        baseline = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_system_stats_reset_baselines
+            WHERE id = 1
+            """
+        ).fetchone() or {}
+
+        total_private_msgs = _normalized_delta(total_private_msgs, baseline.get("total_private_msgs_base"))
+        private_msgs_from_admin = _normalized_delta(private_msgs_from_admin, baseline.get("private_msgs_admin_base"))
+        private_msgs_from_subscribers = _normalized_delta(private_msgs_from_subscribers, baseline.get("private_msgs_subscriber_base"))
+        total_private_chats = _normalized_delta(total_private_chats, baseline.get("total_private_chats_base"))
+        open_private_chats = _normalized_delta(open_private_chats, baseline.get("open_private_chats_base"))
+        total_activity_events = _normalized_delta(total_activity_events, baseline.get("total_activity_events_base"))
+        publication_button_clicks = _normalized_delta(publication_button_clicks, baseline.get("publication_clicks_base"))
+
         return {
             "total_subscribers": total_subscribers,
             "active_subscribers": active_subscribers,
             "suspended_subscribers": suspended_subscribers,
+            "blocked_subscribers": blocked_subscribers,
             "total_publications": total_publications,
             "scheduled_publications": scheduled_publications,
             "active_publications": active_publications,
@@ -354,6 +393,73 @@ def get_live_subscription_system_stats() -> dict:
             "total_activity_events": total_activity_events,
             "publication_button_clicks": publication_button_clicks,
         }
+
+
+def reset_global_action_stats() -> bool:
+    with get_connection() as conn:
+        _ensure_system_stats_reset_baseline_table(conn)
+        total_private_msgs = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages"
+        ).fetchone())
+        private_msgs_from_admin = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages WHERE sender_role = 'admin'"
+        ).fetchone())
+        private_msgs_from_subscribers = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chat_messages WHERE sender_role IN ('subscriber', 'user')"
+        ).fetchone())
+        total_private_chats = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chats"
+        ).fetchone())
+        open_private_chats = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_admin_chats WHERE is_open = 1"
+        ).fetchone())
+        total_activity_events = _read_count(conn.execute(
+            "SELECT COUNT(*) AS total FROM subscriber_activity_log"
+        ).fetchone())
+        publication_button_clicks = _read_count(conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM subscriber_publication_stats
+            WHERE event_key IN ('click', 'button_click')
+            """
+        ).fetchone())
+
+        conn.execute(
+            """
+            INSERT INTO subscriber_system_stats_reset_baselines (
+                id,
+                total_private_msgs_base,
+                private_msgs_admin_base,
+                private_msgs_subscriber_base,
+                total_private_chats_base,
+                open_private_chats_base,
+                total_activity_events_base,
+                publication_clicks_base,
+                reset_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                total_private_msgs_base = excluded.total_private_msgs_base,
+                private_msgs_admin_base = excluded.private_msgs_admin_base,
+                private_msgs_subscriber_base = excluded.private_msgs_subscriber_base,
+                total_private_chats_base = excluded.total_private_chats_base,
+                open_private_chats_base = excluded.open_private_chats_base,
+                total_activity_events_base = excluded.total_activity_events_base,
+                publication_clicks_base = excluded.publication_clicks_base,
+                reset_at = datetime('now')
+            """,
+            (
+                total_private_msgs,
+                private_msgs_from_admin,
+                private_msgs_from_subscribers,
+                total_private_chats,
+                open_private_chats,
+                total_activity_events,
+                publication_button_clicks,
+            ),
+        )
+        conn.commit()
+        return True
 
 
 def _row_factory(cursor, row):

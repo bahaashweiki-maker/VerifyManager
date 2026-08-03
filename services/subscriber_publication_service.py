@@ -25,6 +25,7 @@ from repositories.subscriber_publications_repository import (
     list_publications_page,
     mark_publication_delivery_status,
     record_publication_stat,
+    reset_publication_stats_baseline,
     replace_publication_buttons,
     update_publication,
 )
@@ -107,6 +108,10 @@ def replace_publication_buttons_record(publication_id: int, buttons: list[dict])
 
 def publication_stats(publication_id: int) -> dict:
     return get_publication_stats_summary(publication_id)
+
+
+def reset_publication_stats(publication_id: int) -> bool:
+    return reset_publication_stats_baseline(publication_id)
 
 
 def create_publication_delivery_record(

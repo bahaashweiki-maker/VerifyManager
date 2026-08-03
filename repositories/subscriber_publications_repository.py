@@ -6,6 +6,25 @@ from typing import Optional
 from database.database import get_connection, now_il
 
 
+def _ensure_publication_stats_reset_baseline_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriber_publication_stats_reset_baselines (
+            publication_id               INTEGER PRIMARY KEY,
+            sent_base                    INTEGER NOT NULL DEFAULT 0,
+            failed_base                  INTEGER NOT NULL DEFAULT 0,
+            delivered_base               INTEGER NOT NULL DEFAULT 0,
+            button_click_base            INTEGER NOT NULL DEFAULT 0,
+            click_base                   INTEGER NOT NULL DEFAULT 0,
+            sent_success_count_base      INTEGER NOT NULL DEFAULT 0,
+            sent_fail_count_base         INTEGER NOT NULL DEFAULT 0,
+            reset_at                     TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(publication_id) REFERENCES subscriber_publications(id)
+        )
+        """
+    )
+
+
 def get_all_publications(limit: int = 50) -> list:
     with get_connection() as conn:
         conn.row_factory = _row_factory
@@ -320,6 +339,7 @@ def increment_publication_delivery(publication_id: int, success_count: int, fail
 def get_publication_stats_summary(publication_id: int) -> dict:
     with get_connection() as conn:
         conn.row_factory = _row_factory
+        _ensure_publication_stats_reset_baseline_table(conn)
         pub = conn.execute(
             "SELECT * FROM subscriber_publications WHERE id = ?",
             (publication_id,),
@@ -334,10 +354,100 @@ def get_publication_stats_summary(publication_id: int) -> dict:
             (publication_id,),
         ).fetchall()
         by_event = {r["event_key"]: int(r["total"]) for r in rows}
+
+        baseline = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_publication_stats_reset_baselines
+            WHERE publication_id = ?
+            """,
+            (publication_id,),
+        ).fetchone() or {}
+
+        by_event_effective = dict(by_event)
+        by_event_effective["sent"] = _normalized_delta(by_event.get("sent"), baseline.get("sent_base"))
+        by_event_effective["failed"] = _normalized_delta(by_event.get("failed"), baseline.get("failed_base"))
+        by_event_effective["delivered"] = _normalized_delta(by_event.get("delivered"), baseline.get("delivered_base"))
+        by_event_effective["button_click"] = _normalized_delta(by_event.get("button_click"), baseline.get("button_click_base"))
+        by_event_effective["click"] = _normalized_delta(by_event.get("click"), baseline.get("click_base"))
+
+        sent_success_effective = _normalized_delta(pub.get("sent_success_count"), baseline.get("sent_success_count_base"))
+        sent_fail_effective = _normalized_delta(pub.get("sent_fail_count"), baseline.get("sent_fail_count_base"))
+
         return {
             "publication": pub,
-            "events": by_event,
+            "events": by_event_effective,
+            "events_raw": by_event,
+            "sent_success_effective": sent_success_effective,
+            "sent_fail_effective": sent_fail_effective,
         }
+
+
+def reset_publication_stats_baseline(publication_id: int) -> bool:
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+        _ensure_publication_stats_reset_baseline_table(conn)
+        pub = conn.execute(
+            "SELECT sent_success_count, sent_fail_count FROM subscriber_publications WHERE id = ?",
+            (publication_id,),
+        ).fetchone()
+        if not pub:
+            return False
+
+        rows = conn.execute(
+            """
+            SELECT event_key, COUNT(*) AS total
+            FROM subscriber_publication_stats
+            WHERE publication_id = ?
+            GROUP BY event_key
+            """,
+            (publication_id,),
+        ).fetchall()
+        by_event = {r["event_key"]: int(r["total"]) for r in rows}
+
+        conn.execute(
+            """
+            INSERT INTO subscriber_publication_stats_reset_baselines (
+                publication_id,
+                sent_base,
+                failed_base,
+                delivered_base,
+                button_click_base,
+                click_base,
+                sent_success_count_base,
+                sent_fail_count_base,
+                reset_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(publication_id) DO UPDATE SET
+                sent_base = excluded.sent_base,
+                failed_base = excluded.failed_base,
+                delivered_base = excluded.delivered_base,
+                button_click_base = excluded.button_click_base,
+                click_base = excluded.click_base,
+                sent_success_count_base = excluded.sent_success_count_base,
+                sent_fail_count_base = excluded.sent_fail_count_base,
+                reset_at = datetime('now')
+            """,
+            (
+                publication_id,
+                int(by_event.get("sent") or 0),
+                int(by_event.get("failed") or 0),
+                int(by_event.get("delivered") or 0),
+                int(by_event.get("button_click") or 0),
+                int(by_event.get("click") or 0),
+                int(pub.get("sent_success_count") or 0),
+                int(pub.get("sent_fail_count") or 0),
+            ),
+        )
+        conn.commit()
+        return True
+
+
+def _normalized_delta(current, baseline) -> int:
+    cur = int(current or 0)
+    base = int(baseline or 0)
+    return max(0, cur - base)
 
 
 def get_publication_buttons(publication_id: int) -> list:

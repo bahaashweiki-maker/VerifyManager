@@ -187,6 +187,39 @@ def init_subscriptions_db() -> None:
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_system_stats_reset_baselines (
+                id                           INTEGER PRIMARY KEY CHECK (id = 1),
+                total_private_msgs_base      INTEGER NOT NULL DEFAULT 0,
+                private_msgs_admin_base      INTEGER NOT NULL DEFAULT 0,
+                private_msgs_subscriber_base INTEGER NOT NULL DEFAULT 0,
+                total_private_chats_base     INTEGER NOT NULL DEFAULT 0,
+                open_private_chats_base      INTEGER NOT NULL DEFAULT 0,
+                total_activity_events_base   INTEGER NOT NULL DEFAULT 0,
+                publication_clicks_base      INTEGER NOT NULL DEFAULT 0,
+                reset_at                     TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_publication_stats_reset_baselines (
+                publication_id               INTEGER PRIMARY KEY,
+                sent_base                    INTEGER NOT NULL DEFAULT 0,
+                failed_base                  INTEGER NOT NULL DEFAULT 0,
+                delivered_base               INTEGER NOT NULL DEFAULT 0,
+                button_click_base            INTEGER NOT NULL DEFAULT 0,
+                click_base                   INTEGER NOT NULL DEFAULT 0,
+                sent_success_count_base      INTEGER NOT NULL DEFAULT 0,
+                sent_fail_count_base         INTEGER NOT NULL DEFAULT 0,
+                reset_at                     TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(publication_id) REFERENCES subscriber_publications(id)
+            )
+            """
+        )
+
         conn.commit()
 
     _migrate_add_column("subscriber_publications", "media_type", "TEXT")
