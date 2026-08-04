@@ -402,19 +402,6 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
             return True
 
         await query.answer()
-        pub = get_publication_by_id(publication_id) or {}
-        media_type = (pub.get("media_type") or "").strip()
-        if media_type in {"photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker"}:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            try:
-                await _send_publication_to_chat(context.bot, publication_id, query.message.chat_id)
-            except Exception:
-                pass
-            return True
-
         await _restore_publication_message_in_place(query, publication_id)
         return True
 
@@ -476,16 +463,18 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
     if has_media_message:
         await query.answer()
         try:
-            await query.message.delete()
+            await query.message.edit_caption(
+                caption=note_text or "(ללא תוכן)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_PUB_NOTE_BACK_{publication_id}")],
+                ]),
+            )
+            return True
         except Exception:
             pass
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=note_text or "(ללא תוכן)",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_PUB_NOTE_BACK_{publication_id}")],
-            ]),
-        )
+
+        # If media caption cannot be edited, avoid creating a new message.
+        await query.answer("לא ניתן לפתוח הערה על הודעה זו", show_alert=True)
         return True
 
     await query.answer()
@@ -505,11 +494,7 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
                 reply_markup=reply_markup,
             )
         except Exception:
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=note_text or "(ללא תוכן)",
-                reply_markup=reply_markup,
-            )
+            await query.answer("לא ניתן לפתוח הערה", show_alert=True)
     return True
 
 

@@ -846,17 +846,40 @@ async def _show_publication_note_from_draft(update: Update, context: ContextType
         await update.callback_query.answer("זהו כפתור קישור", show_alert=True)
         return
 
-    await _safe_query_edit(
-        update,
-        text=(
-            f"📝 <b>{title}</b>\n\n"
-            f"{note_text or '(ללא תוכן)'}"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ חזור", callback_data="SUBS_PUB_NOTE_DRAFT_BACK")],
-        ]),
-        parse_mode="HTML",
+    text = (
+        f"📝 <b>{title}</b>\n\n"
+        f"{note_text or '(ללא תוכן)'}"
     )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ חזור", callback_data="SUBS_PUB_NOTE_DRAFT_BACK")],
+    ])
+
+    try:
+        await _safe_query_edit(
+            update,
+            text=text,
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        return
+    except BadRequest as exc:
+        if "there is no text in the message to edit" not in str(exc).lower():
+            raise
+
+    try:
+        await update.callback_query.edit_message_caption(
+            caption=text,
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except BadRequest as exc:
+        if _is_not_modified(exc):
+            try:
+                await update.callback_query.answer("ℹ️ אין שינוי להצגה.")
+            except Exception:
+                pass
+            return
+        raise
 
 
 async def _send_real_publication_preview(context: ContextTypes.DEFAULT_TYPE, chat_id: int, draft: dict) -> None:

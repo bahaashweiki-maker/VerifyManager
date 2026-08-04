@@ -169,6 +169,10 @@ def update_publication(publication_id: int, **fields) -> bool:
 def delete_publication(publication_id: int) -> bool:
     with get_connection() as conn:
         conn.execute(
+            "DELETE FROM subscriber_publication_stats_reset_baselines WHERE publication_id = ?",
+            (publication_id,),
+        )
+        conn.execute(
             "DELETE FROM subscriber_publication_deliveries WHERE publication_id = ?",
             (publication_id,),
         )
