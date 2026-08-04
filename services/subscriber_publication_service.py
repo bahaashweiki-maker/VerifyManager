@@ -449,52 +449,28 @@ async def handle_publication_note_callback(update: Update, context: ContextTypes
     except Exception:
         pass
 
-    # For media messages, keep the original publication (image/video/etc.) untouched,
-    # and show note content as a text-only overlay message.
-    has_media_message = bool(
-        getattr(query.message, "photo", None)
-        or getattr(query.message, "video", None)
-        or getattr(query.message, "animation", None)
-        or getattr(query.message, "document", None)
-        or getattr(query.message, "audio", None)
-        or getattr(query.message, "voice", None)
-    )
-
-    if has_media_message:
-        await query.answer()
-        try:
-            await query.message.edit_caption(
-                caption=note_text or "(ללא תוכן)",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ חזור", callback_data=f"SUBS_PUB_NOTE_BACK_{publication_id}")],
-                ]),
-            )
-            return True
-        except Exception:
-            pass
-
-        # If media caption cannot be edited, avoid creating a new message.
-        await query.answer("לא ניתן לפתוח הערה על הודעה זו", show_alert=True)
-        return True
-
     await query.answer()
     back_cb = f"SUBS_PUB_NOTE_BACK_{publication_id}"
     reply_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ חזור", callback_data=back_cb)],
     ])
+
+    try:
+        await query.message.edit_caption(
+            caption=note_text or "(ללא תוכן)",
+            reply_markup=reply_markup,
+        )
+        return True
+    except Exception:
+        pass
+
     try:
         await query.message.edit_text(
             text=note_text or "(ללא תוכן)",
             reply_markup=reply_markup,
         )
     except Exception:
-        try:
-            await query.message.edit_caption(
-                caption=note_text or "(ללא תוכן)",
-                reply_markup=reply_markup,
-            )
-        except Exception:
-            await query.answer("לא ניתן לפתוח הערה", show_alert=True)
+        await query.answer("לא ניתן לפתוח הערה", show_alert=True)
     return True
 
 

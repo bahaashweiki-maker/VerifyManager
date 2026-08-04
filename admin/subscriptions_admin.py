@@ -1289,7 +1289,12 @@ async def _finalize_publication_button_add(
     draft = context.user_data.get(_PUB_DRAFT) or {}
     buttons = list(draft.get("buttons") or [])
     row_index = _next_row_index_for_new_button(buttons, same_row=same_row)
-    buttons.append({"title": label[:50], "url": value[:300], "row_index": row_index})
+    is_note_button = decode_publication_note(value) is not None
+    buttons.append({
+        "title": label[:50],
+        "url": value if is_note_button else value[:300],
+        "row_index": row_index,
+    })
     draft["buttons"] = buttons
     context.user_data[_PUB_DRAFT] = draft
     context.user_data[_PUB_PREVIEW_CONFIRMED] = False
