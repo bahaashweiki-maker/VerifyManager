@@ -182,7 +182,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     context.user_data.clear()
     context.user_data["support_chat_suppressed"] = True
-    await render_home(context.bot, update.effective_chat.id)
+    await render_home(context.bot, update.effective_chat.id, telegram_id=update.effective_user.id)
 
 
 # ─────────────────────────────────────────
@@ -255,7 +255,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         except Exception:
             pass
-        await render_home(context.bot, query.message.chat_id)
+        await render_home(context.bot, query.message.chat_id, telegram_id=query.from_user.id)
         return
 
     # 5. מערכת האימותים — מנהל
@@ -329,7 +329,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         context.user_data.pop("_nav_stack", None)
-        await render_home(context.bot, query.message.chat_id)
+        await render_home(context.bot, query.message.chat_id, telegram_id=query.from_user.id)
         return
 
     # 8. pub:* שלא נתפס ע"י ConversationHandler — בלע בשקט

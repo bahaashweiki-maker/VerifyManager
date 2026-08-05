@@ -4744,7 +4744,7 @@ async def handle_subscriber_user_message(
     except Exception:
         history = []
 
-    if context.user_data.get("support_chat_suppressed"):
+    if context.user_data.get("support_chat_suppressed") and history:
         has_admin_reply = any((item or {}).get("sender_role") == "admin" for item in history)
         if not has_admin_reply:
             return False

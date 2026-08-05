@@ -65,7 +65,11 @@ async def cancel_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     # חזרה לדף הבית
-    success = await render_home(context.bot, update.callback_query.message.chat_id)
+    success = await render_home(
+        context.bot,
+        update.callback_query.message.chat_id,
+        telegram_id=user_id,
+    )
     if not success:
         await PageEngine.show_page(update, context, "HOME")
 

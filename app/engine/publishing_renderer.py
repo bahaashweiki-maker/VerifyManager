@@ -46,6 +46,11 @@ from services.verified_users_service import (
     get_auto_catalogs_for_user,
     get_user_catalog_slugs,
 )
+from services.merchant_service import is_merchant
+from repositories.merchant_publication_repository import (
+    list_merchant_allowed_channels,
+    merchant_has_hourly_publish,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,14 @@ _SYSTEM_BUTTONS: list[list[InlineKeyboardButton]] = [
     [InlineKeyboardButton("🪪 שלח אימות", callback_data="START_VERIFY")],
     [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
 ]
+
+
+def _build_system_buttons(telegram_id: Optional[int] = None) -> list[list[InlineKeyboardButton]]:
+    """Build home system buttons and add merchant entry only for merchants."""
+    rows = [row[:] for row in _SYSTEM_BUTTONS]
+    if telegram_id and is_merchant(telegram_id):
+        rows.insert(1, [InlineKeyboardButton("💼 אזור סוחר", callback_data="pub:user:merchant")])
+    return rows
 
 _CONTACT_STATE_KEY = "user_contact_state"
 _CONTACT_CATEGORY_KEY = "user_contact_category"
@@ -335,6 +348,7 @@ def _row_sort_key(btn) -> tuple:
 def _build_keyboard(
     buttons: list,
     include_system: bool = False,
+    telegram_id: Optional[int] = None,
 ) -> InlineKeyboardMarkup:
     """
     בונה InlineKeyboardMarkup בפריסה מקצועית — greedy packing.
@@ -371,7 +385,7 @@ def _build_keyboard(
         rows.append([pending])
 
     if include_system:
-        rows.extend(_SYSTEM_BUTTONS)
+        rows.extend(_build_system_buttons(telegram_id))
     return InlineKeyboardMarkup(rows)
 
 
@@ -446,6 +460,7 @@ async def _send_media(
 async def render_home(
     bot: Bot,
     chat_id: int,
+    telegram_id: Optional[int] = None,
 ) -> None:
     """
     שולח את דף הבית למשתמש.
@@ -470,9 +485,9 @@ async def render_home(
             text     = home["text"] or text
             image    = home["image_file_id"]
             buttons  = pub_get_buttons_for_home(1)
-            keyboard = _build_keyboard(buttons, include_system=True)
+            keyboard = _build_keyboard(buttons, include_system=True, telegram_id=telegram_id)
         else:
-            keyboard = InlineKeyboardMarkup(_SYSTEM_BUTTONS)
+            keyboard = InlineKeyboardMarkup(_build_system_buttons(telegram_id))
 
         if image:
             msg = await _send_media(
@@ -785,10 +800,81 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.user_data[_SUPPORT_CHAT_SUPPRESSED_KEY] = True
         context.user_data.pop(_CONTACT_STATE_KEY, None)
         context.user_data.pop(_CONTACT_CATEGORY_KEY, None)
-        await render_home(bot, chat_id)
+        await render_home(bot, chat_id, telegram_id=query.from_user.id)
 
     elif action == "page" and len(parts) > 3:
         await render_page(bot, chat_id, int(parts[3]), telegram_id=query.from_user.id)
+
+    elif action == "merchant":
+        if not is_merchant(query.from_user.id):
+            await bot.send_message(chat_id, "⛔ אין לך גישה לאזור הסוחר.")
+            await render_home(bot, chat_id, telegram_id=query.from_user.id)
+            return
+
+        sub_action = parts[3] if len(parts) > 3 else ""
+        channels = list_merchant_allowed_channels(query.from_user.id)
+        is_hourly = merchant_has_hourly_publish(query.from_user.id)
+
+        if sub_action == "channels":
+            lines = "\n".join(f"• {c}" for c in channels) if channels else "אין עדיין ערוצים מורשים."
+            await bot.send_message(
+                chat_id,
+                f"📡 <b>הערוצים שלי</b>\n\n{lines}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
+        if sub_action == "status":
+            hourly_label = "פעיל" if is_hourly else "לא פעיל"
+            await bot.send_message(
+                chat_id,
+                (
+                    "🛡️ <b>סטטוס הרשאות סוחר</b>\n\n"
+                    f"⏱️ פרסום שעתי: <b>{hourly_label}</b>\n"
+                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
+        if sub_action in {"start", "schedule"}:
+            await bot.send_message(
+                chat_id,
+                "🚧 הפעולה תופעל בשלב הבא של המערכת.\nכרגע המסך מחובר ומוכן.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
+        hourly_label = "כן" if is_hourly else "לא"
+        channels_preview = "\n".join(f"• {c}" for c in channels[:5]) if channels else "אין ערוצים מורשים"
+        if len(channels) > 5:
+            channels_preview += f"\n... ועוד {len(channels) - 5}"
+
+        await bot.send_message(
+            chat_id,
+            (
+                "💼 <b>אזור סוחר</b>\n\n"
+                f"⏱️ פרסום שעתי בלבד: <b>{hourly_label}</b>\n"
+                f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"
+                f"{channels_preview}"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")],
+                [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
+                [InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")],
+                [InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")],
+                [InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")],
+            ]),
+        )
 
     elif action == "contact":
         context.user_data.pop(_SUPPORT_CHAT_SUPPRESSED_KEY, None)

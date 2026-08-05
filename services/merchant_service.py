@@ -64,7 +64,16 @@ def is_merchant(telegram_id: int) -> bool:
     Returns:
         True אם יש גישה לפאנל, False אחרת.
     """
-    return has_permission(telegram_id, "merchant")
+    # Compatibility: some flows mark merchant via user_type_assignments
+    # without granting explicit "merchant" permission.
+    if has_permission(telegram_id, "merchant"):
+        return True
+    try:
+        from services.verified_users_service import get_user_type
+
+        return get_user_type(telegram_id) == "merchant"
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
