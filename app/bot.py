@@ -34,12 +34,14 @@ from admin.subscriptions_admin import (
     handle_subscriber_user_message,
     bootstrap_publication_jobs_on_startup,
 )
+from admin.merchant_admin import merchant_admin_route, handle_merchant_admin_input
 from admin.verified_users_admin import (
     verified_users_route,
     handle_verified_users_input,
     handle_verification_chat_user_message,
 )
 
+from database.merchant_publication_models import init_merchant_publication_db
 from database.publishing_models import init_publishing_db
 from database.permission_models import init_permissions_db
 from database.verified_users_models import init_verified_users_db
@@ -322,6 +324,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return await subscriptions_admin_route(update, context)
 
+    if data == "ADMIN_MERCHANTS" or data.startswith("MERCHANT_ADM_"):
+        uid = query.from_user.id
+        if not is_super_admin(uid) and not has_permission(uid, "merchant.manage"):
+            await query.answer("⛔ אין לך הרשאה לניהול סוחרים.", show_alert=True)
+            return
+        return await merchant_admin_route(update, context)
+
     # 7. HOME — דרך Publishing Module בלבד
     if data == "HOME":
         try:
@@ -369,6 +378,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # קלט ממודול מנויים (חיפוש)
     if context.user_data.get("subs_state") and update.message:
         return await handle_subscriptions_input(update, context)
+    # קלט ממודול ניהול סוחרים
+    if context.user_data.get("merchant_admin_state") and update.message and update.message.text:
+        return await handle_merchant_admin_input(update, context)
     # קלט ממסך האימות הישן (VERIFY_MESSAGE_) חייב להישאר מופרד ממסלול שיחות האימות
     if update.message and update.effective_user:
         admin_state = context.user_data.get(update.effective_user.id)
@@ -411,6 +423,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────
 def main():
     init_publishing_db()
+    init_merchant_publication_db()
     init_permissions_db()
     init_verified_users_db()
     init_subscriptions_db()

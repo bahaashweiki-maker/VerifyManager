@@ -54,6 +54,9 @@ PERMISSIONS: list[dict[str, str]] = [
     # ─── מערכת מנויים ────────────────────────────────────────────────────────
     {"key": "subscriptions.view", "label": "👥 מערכת מנויים"},
 
+    # ─── מערכת סוחרים ופרסום ─────────────────────────────────────────────────
+    {"key": "merchant.manage", "label": "🏪 ניהול סוחרים ופרסום"},
+
     # ─── מודולים עתידיים — פשוט בטל-הערה כשבונים ────────────────────────────
     # {"key": "ai.manage",        "label": "🤖 ניהול בינה מלאכותית"},
     # {"key": "shop.manage",      "label": "🛒 ניהול חנות"},
@@ -108,6 +111,11 @@ ADMIN_MODULES: list[dict] = [
         "label":    "👥 מערכת מנויים",
         "callback": "ADMIN_SUBSCRIPTIONS",
         "requires": ["subscriptions.view"],
+    },
+    {
+        "label":    "🏪 ניהול סוחרים ופרסום",
+        "callback": "ADMIN_MERCHANTS",
+        "requires": ["merchant.manage"],
     },
 
     # ─── מודולים עתידיים — פשוט בטל-הערה כשבונים ────────────────────────────

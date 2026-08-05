@@ -41,12 +41,29 @@ from __future__ import annotations
 
 import logging
 
+from database.database import get_connection
 from services.permission_service import has_permission, get_user_permissions
+from services.verified_users_service import get_user_general_permissions
 
 logger = logging.getLogger(__name__)
 
 # קידומת הרשאות הסוחר — כל הרשאה שמתחילה בה שייכת לפאנל הסוחר
 MERCHANT_PREFIX = "merchant."
+
+MERCHANT_CAPABILITY_LABELS: dict[str, str] = {
+    "user.publish.create": "📝 יצירת פרסום",
+    "user.publish.edit": "✏️ עריכת פרסום",
+    "user.publish.delete": "🗑 מחיקת פרסום",
+    "user.publish.pin": "📌 הצמדת פרסום",
+    "user.publish.schedule": "🕐 תזמון פרסום",
+    "user.media.image": "🖼 העלאת תמונה",
+    "user.media.video": "🎥 העלאת וידאו",
+    "user.review.write": "⭐ הגשת חוות דעת",
+    "user.review.reply": "💬 מענה לחוות דעת",
+    "user.store.view": "🛍 צפייה בחנות",
+    "user.store.sell": "🛒 מכירה בחנות",
+    "user.store.manage": "⚙️ ניהול חנות",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,3 +139,56 @@ def has_merchant_permission(telegram_id: int, permission: str) -> bool:
             # הצג כפתור פרסום בבוט
     """
     return has_permission(telegram_id, permission)
+
+
+def list_merchant_profiles() -> list[dict]:
+    """Return merchant users based on verified user type assignments."""
+    try:
+        with get_connection() as conn:
+            conn.row_factory = _row_factory
+            rows = conn.execute(
+                """
+                SELECT
+                    uta.telegram_id,
+                    u.full_name,
+                    u.username,
+                    uta.assigned_at
+                FROM user_type_assignments uta
+                LEFT JOIN users u ON u.telegram_id = uta.telegram_id
+                WHERE uta.type_key = 'merchant'
+                ORDER BY COALESCE(u.full_name, u.username, CAST(uta.telegram_id AS TEXT)) COLLATE NOCASE ASC
+                """
+            ).fetchall()
+        return rows
+    except Exception as exc:
+        logger.error("list_merchant_profiles failed: %s", exc)
+        return []
+
+
+def _row_factory(cursor, row):
+    fields = [d[0] for d in cursor.description]
+    data = dict(zip(fields, row))
+    full_name = data.get("full_name")
+    username = data.get("username")
+    telegram_id = data.get("telegram_id")
+    if full_name:
+        display_name = full_name
+    elif username:
+        display_name = f"@{username}"
+    else:
+        display_name = str(telegram_id)
+    data["display_name"] = display_name
+    return data
+
+
+def get_merchant_capability_flags(telegram_id: int) -> dict[str, bool]:
+    """Return boolean flags for the connected merchant user.* permissions."""
+    perms = set(get_user_general_permissions(telegram_id))
+    return {key: (key in perms) for key in MERCHANT_CAPABILITY_LABELS}
+
+
+def can_merchant_start_publication(telegram_id: int) -> bool:
+    flags = get_merchant_capability_flags(telegram_id)
+    return bool(flags.get("user.publish.create")) and bool(
+        flags.get("user.media.image") or flags.get("user.media.video")
+    )

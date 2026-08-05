@@ -47,6 +47,11 @@ from services.verified_users_service import (
     get_user_catalog_slugs,
 )
 from services.merchant_service import is_merchant
+from services.merchant_service import (
+    MERCHANT_CAPABILITY_LABELS,
+    can_merchant_start_publication,
+    get_merchant_capability_flags,
+)
 from repositories.merchant_publication_repository import (
     list_merchant_allowed_channels,
     merchant_has_hourly_publish,
@@ -814,6 +819,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         sub_action = parts[3] if len(parts) > 3 else ""
         channels = list_merchant_allowed_channels(query.from_user.id)
         is_hourly = merchant_has_hourly_publish(query.from_user.id)
+        capability_flags = get_merchant_capability_flags(query.from_user.id)
+        can_start_publication = can_merchant_start_publication(query.from_user.id)
 
         if sub_action == "channels":
             lines = "\n".join(f"• {c}" for c in channels) if channels else "אין עדיין ערוצים מורשים."
@@ -829,12 +836,17 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if sub_action == "status":
             hourly_label = "פעיל" if is_hourly else "לא פעיל"
+            capability_lines = []
+            for key, label in MERCHANT_CAPABILITY_LABELS.items():
+                mark = "✅" if capability_flags.get(key) else "❌"
+                capability_lines.append(f"{mark} {label}")
             await bot.send_message(
                 chat_id,
                 (
                     "🛡️ <b>סטטוס הרשאות סוחר</b>\n\n"
                     f"⏱️ פרסום שעתי: <b>{hourly_label}</b>\n"
-                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>"
+                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"
+                    + "\n".join(capability_lines)
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
@@ -843,10 +855,82 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        if sub_action in {"start", "schedule"}:
+        if sub_action == "start":
+            if not can_start_publication:
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך עדיין הרשאות מלאות להתחלת פרסום.\nנדרשות לפחות הרשאת יצירת פרסום והרשאת מדיה.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            if not channels:
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך ערוצים משויכים עדיין. מנהל צריך לשייך לך ערוץ קודם.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            media_line = "תמונה" if capability_flags.get("user.media.image") and not capability_flags.get("user.media.video") else (
+                "וידאו" if capability_flags.get("user.media.video") and not capability_flags.get("user.media.image") else "תמונה או וידאו"
+            )
             await bot.send_message(
                 chat_id,
-                "🚧 הפעולה תופעל בשלב הבא של המערכת.\nכרגע המסך מחובר ומוכן.",
+                (
+                    "▶️ <b>התחל פרסום</b>\n\n"
+                    f"מותר לך כרגע להעלות: <b>{media_line}</b>\n"
+                    f"ערוצים זמינים: <b>{len(channels)}</b>\n\n"
+                    "הזרימה המלאה תחובר בשלב הבא, אבל ההרשאות כבר מזוהות ופועלות."
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
+        if sub_action == "schedule":
+            if not capability_flags.get("user.publish.schedule"):
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך הרשאת תזמון פרסום כרגע.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            await bot.send_message(
+                chat_id,
+                (
+                    "⏱️ <b>תזמון פרסום</b>\n\n"
+                    f"הרשאת תזמון: <b>פעילה</b>\n"
+                    f"מצב כל שעה: <b>{'פעיל' if is_hourly else 'כבוי'}</b>\n\n"
+                    "התזמון המעשי יחובר בשלב הבא."
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
+        if sub_action == "reviews":
+            if not capability_flags.get("user.review.write"):
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך הרשאת חוות דעת כרגע.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            await bot.send_message(
+                chat_id,
+                "⭐ חוות דעת מחוברת להרשאה הקיימת ותיבנה במסך מלא בשלב הבא.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
                 ]),
@@ -858,6 +942,19 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if len(channels) > 5:
             channels_preview += f"\n... ועוד {len(channels) - 5}"
 
+        menu_rows = []
+        if can_start_publication:
+            menu_rows.append([InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")])
+        if capability_flags.get("user.publish.schedule"):
+            menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
+        if capability_flags.get("user.review.write"):
+            menu_rows.append([InlineKeyboardButton("⭐ חוות דעת", callback_data="pub:user:merchant:reviews")])
+        menu_rows.extend([
+            [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
+            [InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")],
+            [InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")],
+        ])
+
         await bot.send_message(
             chat_id,
             (
@@ -867,13 +964,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"{channels_preview}"
             ),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")],
-                [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
-                [InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")],
-                [InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")],
-                [InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(menu_rows),
         )
 
     elif action == "contact":
