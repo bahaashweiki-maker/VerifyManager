@@ -20,6 +20,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.constants import ChatMemberStatus
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
@@ -51,10 +52,13 @@ from services.merchant_service import (
     MERCHANT_CAPABILITY_LABELS,
     can_merchant_start_publication,
     get_merchant_capability_flags,
+    list_merchant_allowed_channel_records,
+    list_merchant_required_channel_records,
 )
-from repositories.merchant_publication_repository import (
-    list_merchant_allowed_channels,
-    merchant_has_hourly_publish,
+from repositories.merchant_publication_repository import merchant_has_hourly_publish
+from repositories.merchant_channels_repository import (
+    get_channel_join_url,
+    get_channel_membership_chat_ref,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,7 @@ _CONTACT_CATEGORY_KEY = "user_contact_category"
 _CONTACT_SUBSCRIBER_ID_KEY = "user_contact_subscriber_id"
 _CONTACT_CHAT_ID_KEY = "user_contact_chat_id"
 _SUPPORT_CHAT_SUPPRESSED_KEY = "support_chat_suppressed"
+_MERCHANT_SELECTED_CHANNELS_KEY = "merchant_selected_channels"
 
 _CONTACT_CATEGORIES: dict[str, str] = {
     "general": "💬 פנייה כללית",
@@ -739,6 +744,195 @@ async def render_page(
 # handle_user_nav — callback handler לניווט משתמש
 # ---------------------------------------------------------------------------
 
+async def _get_required_channel_statuses(
+    bot: Bot,
+    telegram_id: int,
+    channels: list[dict],
+) -> list[dict]:
+    statuses: list[dict] = []
+    for channel in channels:
+        chat_ref = get_channel_membership_chat_ref(channel)
+        status = "unknown"
+        if chat_ref:
+            try:
+                member = await bot.get_chat_member(chat_id=chat_ref, user_id=telegram_id)
+                if member.status not in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED}:
+                    status = "joined"
+                else:
+                    status = "missing"
+            except TelegramError as exc:
+                message = str(exc).lower()
+                if "user not participant" in message or "participant_id_invalid" in message:
+                    status = "missing"
+                else:
+                    status = "unknown"
+            except Exception:
+                status = "unknown"
+        statuses.append({"channel": channel, "status": status})
+    return statuses
+
+
+def _build_required_join_buttons(items: list[dict]) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        if item.get("status") == "joined":
+            continue
+        join_url = get_channel_join_url(item["channel"])
+        if not join_url:
+            continue
+        rows.append([
+            InlineKeyboardButton(
+                f"🔗 הצטרף: {item['channel']['display_name']}",
+                url=join_url,
+            )
+        ])
+    return rows
+
+
+async def _send_required_channels_gate(bot: Bot, chat_id: int, items: list[dict]) -> None:
+    lines = []
+    has_unknown = False
+    for item in items:
+        prefix = "❌" if item["status"] == "missing" else "⚠️"
+        if item["status"] == "unknown":
+            has_unknown = True
+        lines.append(f"{prefix} {item['channel']['display_name']}")
+
+    extra_note = ""
+    if has_unknown:
+        extra_note = (
+            "\n\nℹ️ בחלק מהערוצים הפרטיים אין אימות אוטומטי מלא. "
+            "הצטרף אליהם ואז אפשר להמשיך לפרסום."
+        )
+
+    await bot.send_message(
+        chat_id,
+        (
+            "🔐 <b>יש להשלים הצטרפות לפני פתיחת פרסום</b>\n\n"
+            "הצטרף לערוצים שהוגדרו לפני פתיחת פרסום.\n\n"
+            + "\n".join(lines)
+            + extra_note
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            _build_required_join_buttons(items)
+            + [[InlineKeyboardButton("🔄 בדוק שוב", callback_data="pub:user:merchant")]]
+            + [[InlineKeyboardButton("🔁 הפעל מחדש", callback_data="RESTART_BOT_PENDING")]]
+            + [[InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")]]
+        ),
+    )
+
+
+async def _send_required_channels_status(
+    bot: Bot,
+    chat_id: int,
+    statuses: list[dict],
+    all_joined: bool,
+) -> None:
+    if not statuses:
+        await bot.send_message(
+            chat_id,
+            "🔐 אין כרגע ערוצי חובה שהוגדרו לסוחר זה.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+            ]),
+        )
+        return
+
+    lines = []
+    for item in statuses:
+        if item["status"] == "joined":
+            mark = "✅"
+        elif item["status"] == "missing":
+            mark = "❌"
+        else:
+            mark = "ℹ️"
+        lines.append(f"{mark} {item['channel']['display_name']}")
+
+    only_unknown = bool(statuses) and all(item["status"] == "unknown" for item in statuses)
+
+    header = (
+        "✅ <b>הצטרפות הושלמה לכל ערוצי החובה</b>\n\n"
+        if all_joined
+        else "🔐 <b>הצטרפות לערוצים לפני פרסום</b>\n\n"
+    )
+
+    if only_unknown:
+        header += (
+            "הצטרף לערוצים הפרטיים הבאים.\n"
+            "לאחר ההצטרפות אפשר להמשיך לפרסום.\n\n"
+        )
+
+    rows = _build_required_join_buttons(statuses)
+    rows.append([InlineKeyboardButton("🔄 בדוק שוב", callback_data="pub:user:merchant:required")])
+    rows.append([InlineKeyboardButton("▶️ המשך לפרסום", callback_data="pub:user:merchant:start")])
+    rows.append([InlineKeyboardButton("🔁 הפעל מחדש", callback_data="RESTART_BOT_PENDING")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
+
+    await bot.send_message(
+        chat_id,
+        header + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+def _get_selected_merchant_channels(
+    context: ContextTypes.DEFAULT_TYPE,
+    allowed_channel_records: list[dict],
+) -> set[str]:
+    allowed_keys = {str(ch.get("channel_key") or "") for ch in allowed_channel_records}
+    allowed_keys.discard("")
+    raw_selected = context.user_data.get(_MERCHANT_SELECTED_CHANNELS_KEY)
+    selected: set[str] = set(raw_selected) if isinstance(raw_selected, list) else set(allowed_keys)
+    selected &= allowed_keys
+    context.user_data[_MERCHANT_SELECTED_CHANNELS_KEY] = sorted(selected)
+    return selected
+
+
+async def _send_merchant_start_screen(
+    bot: Bot,
+    chat_id: int,
+    allowed_channel_records: list[dict],
+    selected_channel_keys: set[str],
+    capability_flags: dict[str, bool],
+) -> None:
+    media_line = "תמונה" if capability_flags.get("user.media.image") and not capability_flags.get("user.media.video") else (
+        "וידאו" if capability_flags.get("user.media.video") and not capability_flags.get("user.media.image") else "תמונה או וידאו"
+    )
+
+    lines = []
+    rows: list[list[InlineKeyboardButton]] = []
+    for channel in allowed_channel_records:
+        key = str(channel.get("channel_key") or "")
+        if not key:
+            continue
+        mark = "✅" if key in selected_channel_keys else "⬜"
+        lines.append(f"{mark} {channel['display_name']}")
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {channel['display_name']}",
+                callback_data=f"pub:user:merchant:pickch:{key}",
+            )
+        ])
+
+    rows.extend([
+        [InlineKeyboardButton("▶️ המשך", callback_data="pub:user:merchant:startconfirm")],
+        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+    ])
+
+    await bot.send_message(
+        chat_id,
+        (
+            "▶️ <b>התחל פרסום</b>\n\n"
+            f"מותר לך כרגע להעלות: <b>{media_line}</b>\n"
+            "בחר את הערוצים שאליהם תרצה לפרסם:\n\n"
+            + "\n".join(lines)
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
 async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     מטפל בכל callback_data שמתחיל ב-pub:user:.
@@ -817,10 +1011,25 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         sub_action = parts[3] if len(parts) > 3 else ""
-        channels = list_merchant_allowed_channels(query.from_user.id)
+        allowed_channel_records = list_merchant_allowed_channel_records(query.from_user.id)
+        required_channel_records = list_merchant_required_channel_records(query.from_user.id)
+        channels = [channel["display_name"] for channel in allowed_channel_records]
         is_hourly = merchant_has_hourly_publish(query.from_user.id)
         capability_flags = get_merchant_capability_flags(query.from_user.id)
         can_start_publication = can_merchant_start_publication(query.from_user.id)
+        required_statuses = await _get_required_channel_statuses(bot, query.from_user.id, required_channel_records)
+        missing_required = [item for item in required_statuses if item["status"] == "missing"]
+        unknown_required = [item for item in required_statuses if item["status"] == "unknown"]
+        not_joined_required = [item for item in required_statuses if item["status"] != "joined"]
+
+        if sub_action == "required":
+            await _send_required_channels_status(
+                bot,
+                chat_id,
+                required_statuses,
+                all_joined=(len(not_joined_required) == 0),
+            )
+            return
 
         if sub_action == "channels":
             lines = "\n".join(f"• {c}" for c in channels) if channels else "אין עדיין ערוצים מורשים."
@@ -840,13 +1049,20 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for key, label in MERCHANT_CAPABILITY_LABELS.items():
                 mark = "✅" if capability_flags.get(key) else "❌"
                 capability_lines.append(f"{mark} {label}")
+            required_lines = []
+            for item in required_statuses:
+                mark = "✅" if item["status"] == "joined" else ("❌" if item["status"] == "missing" else "⚠️")
+                required_lines.append(f"{mark} {item['channel']['display_name']}")
             await bot.send_message(
                 chat_id,
                 (
                     "🛡️ <b>סטטוס הרשאות סוחר</b>\n\n"
+                    f"🆔 משתמש: <code>{query.from_user.id}</code>\n"
                     f"⏱️ פרסום שעתי: <b>{hourly_label}</b>\n"
-                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"
+                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n"
+                    f"🔐 ערוצי חובה: <b>{len(required_statuses)}</b>\n\n"
                     + "\n".join(capability_lines)
+                    + ("\n\n🔐 <b>בדיקת הצטרפות</b>\n" + "\n".join(required_lines) if required_lines else "")
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
@@ -856,6 +1072,9 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if sub_action == "start":
+            if missing_required:
+                await _send_required_channels_gate(bot, chat_id, missing_required)
+                return
             if not can_start_publication:
                 await bot.send_message(
                     chat_id,
@@ -874,26 +1093,79 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     ]),
                 )
                 return
-            media_line = "תמונה" if capability_flags.get("user.media.image") and not capability_flags.get("user.media.video") else (
-                "וידאו" if capability_flags.get("user.media.video") and not capability_flags.get("user.media.image") else "תמונה או וידאו"
+            selected = _get_selected_merchant_channels(context, allowed_channel_records)
+            await _send_merchant_start_screen(
+                bot,
+                chat_id,
+                allowed_channel_records,
+                selected,
+                capability_flags,
             )
+            return
+
+        if sub_action == "pickch" and len(parts) > 4:
+            if missing_required:
+                await _send_required_channels_gate(bot, chat_id, missing_required)
+                return
+            channel_key = str(parts[4] or "")
+            allowed_keys = {str(ch.get("channel_key") or "") for ch in allowed_channel_records}
+            allowed_keys.discard("")
+            selected = _get_selected_merchant_channels(context, allowed_channel_records)
+            if channel_key in allowed_keys:
+                if channel_key in selected:
+                    selected.remove(channel_key)
+                else:
+                    selected.add(channel_key)
+                context.user_data[_MERCHANT_SELECTED_CHANNELS_KEY] = sorted(selected)
+            await _send_merchant_start_screen(
+                bot,
+                chat_id,
+                allowed_channel_records,
+                selected,
+                capability_flags,
+            )
+            return
+
+        if sub_action == "startconfirm":
+            if missing_required:
+                await _send_required_channels_gate(bot, chat_id, missing_required)
+                return
+            selected = _get_selected_merchant_channels(context, allowed_channel_records)
+            selected_names = [
+                ch["display_name"]
+                for ch in allowed_channel_records
+                if str(ch.get("channel_key") or "") in selected
+            ]
+            if not selected_names:
+                await bot.send_message(
+                    chat_id,
+                    "⚠️ צריך לבחור לפחות ערוץ אחד לפרסום.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לבחירת ערוצים", callback_data="pub:user:merchant:start")],
+                    ]),
+                )
+                return
+
             await bot.send_message(
                 chat_id,
                 (
-                    "▶️ <b>התחל פרסום</b>\n\n"
-                    f"מותר לך כרגע להעלות: <b>{media_line}</b>\n"
-                    f"ערוצים זמינים: <b>{len(channels)}</b>\n\n"
-                    "הזרימה המלאה תחובר בשלב הבא, אבל ההרשאות כבר מזוהות ופועלות."
+                    "✅ <b>בחירת ערוצים נשמרה</b>\n\n"
+                    "הפרסום יישלח לערוצים שבחרת:\n"
+                    + "\n".join(f"• {name}" for name in selected_names)
+                    + "\n\n"
+                    "בשלב הבא נחבר שליחת מדיה וטקסט בפועל לערוצים הנבחרים."
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
                     [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
                 ]),
             )
             return
 
         if sub_action == "schedule":
+            if missing_required:
+                await _send_required_channels_gate(bot, chat_id, missing_required)
+                return
             if not capability_flags.get("user.publish.schedule"):
                 await bot.send_message(
                     chat_id,
@@ -943,22 +1215,40 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             channels_preview += f"\n... ועוד {len(channels) - 5}"
 
         menu_rows = []
-        if can_start_publication:
+        if can_start_publication and not missing_required:
             menu_rows.append([InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")])
-        if capability_flags.get("user.publish.schedule"):
+        if capability_flags.get("user.publish.schedule") and not missing_required:
             menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
         if capability_flags.get("user.review.write"):
             menu_rows.append([InlineKeyboardButton("⭐ חוות דעת", callback_data="pub:user:merchant:reviews")])
         menu_rows.extend([
+            [InlineKeyboardButton("🔐 חובת הצטרפות", callback_data="pub:user:merchant:required")],
             [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
             [InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")],
             [InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")],
         ])
 
+        prefix = ""
+        if missing_required:
+            prefix = (
+                "🔐 <b>לפני תחילת פרסום יש להשלים הצטרפות לערוצי החובה.</b>\n"
+                "הצטרף לערוצים ואז לחץ בדוק שוב.\n\n"
+            )
+            menu_rows = _build_required_join_buttons(not_joined_required) + [
+                [InlineKeyboardButton("🔄 בדוק שוב", callback_data="pub:user:merchant")],
+                [InlineKeyboardButton("🔁 הפעל מחדש", callback_data="RESTART_BOT_PENDING")],
+            ] + menu_rows
+        elif not channels:
+            prefix = (
+                "📡 <b>אין לך עדיין ערוצי פרסום מורשים.</b>\n"
+                "פנה למנהל כדי לשייך לך לפחות ערוץ פרסום אחד.\n\n"
+            )
         await bot.send_message(
             chat_id,
             (
                 "💼 <b>אזור סוחר</b>\n\n"
+                f"{prefix}"
+                f"🆔 משתמש: <code>{query.from_user.id}</code>\n"
                 f"⏱️ פרסום שעתי בלבד: <b>{hourly_label}</b>\n"
                 f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"
                 f"{channels_preview}"

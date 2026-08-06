@@ -63,6 +63,17 @@ def test_revoke_merchant_channel_access() -> None:
     conn.close()
 
 
+def test_grant_and_revoke_required_channel() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        assert repo.grant_merchant_required_channel(telegram_id=444, channel_key="@NorthNews", granted_by=1) is True
+        assert repo.list_merchant_required_channels(444) == ["northnews"]
+
+        assert repo.revoke_merchant_required_channel(444, "northnews") is True
+        assert repo.list_merchant_required_channels(444) == []
+    conn.close()
+
+
 def test_set_and_unset_hourly_publish_permission() -> None:
     conn, fake_get_connection = _shared_memory_get_connection()
     with patch.object(repo, "get_connection", fake_get_connection):

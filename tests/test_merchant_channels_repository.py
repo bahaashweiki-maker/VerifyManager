@@ -70,3 +70,68 @@ def test_get_channel_by_id_returns_none_when_missing() -> None:
     with patch.object(repo, "get_connection", fake_get_connection):
         assert repo.get_channel_by_id(999) is None
     conn.close()
+
+
+def test_create_channel_supports_friendly_name_pipe_format() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        channel_id = repo.create_channel("קהילת מרכז | https://t.me/CenterHub")
+        channel = repo.get_channel_by_id(channel_id)
+        assert channel is not None
+        assert channel["display_name"] == "קהילת מרכז"
+        assert channel["channel_key"] == "centerhub"
+        assert repo.get_channel_join_url(channel) == "tg://resolve?domain=CenterHub"
+        assert repo.get_channel_membership_chat_ref(channel) == "@CenterHub"
+    conn.close()
+
+
+def test_create_channel_supports_name_plus_invite_link_without_pipe() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        channel_id = repo.create_channel("קהילה בוט ראשי https://t.me/+7IU8He3EuAlmMjFk")
+        channel = repo.get_channel_by_id(channel_id)
+        assert channel is not None
+        assert channel["display_name"] == "קהילה בוט ראשי"
+        assert channel["channel_ref"] == "https://t.me/+7IU8He3EuAlmMjFk"
+        assert channel["channel_key"] == "7iu8he3eualmmjfk"
+        assert repo.get_channel_join_url(channel) == "tg://join?invite=7IU8He3EuAlmMjFk"
+        assert repo.get_channel_membership_chat_ref(channel) is None
+    conn.close()
+
+
+def test_create_channel_supports_private_invite_with_explicit_chat_id() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        channel_id = repo.create_channel("קהילה פרטית | https://t.me/+AbCdEf1234 | -1002456789012")
+        channel = repo.get_channel_by_id(channel_id)
+        assert channel is not None
+        assert channel["display_name"] == "קהילה פרטית"
+        assert channel["channel_ref"] == "https://t.me/+AbCdEf1234 | -1002456789012"
+        assert channel["channel_key"] == "1002456789012"
+        assert repo.get_channel_join_url(channel) == "tg://join?invite=AbCdEf1234"
+        assert repo.get_channel_membership_chat_ref(channel) == "-1002456789012"
+    conn.close()
+
+
+def test_list_channels_cleans_legacy_display_name_with_embedded_link() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        with repo.get_connection() as inner:
+            inner.execute(
+                """
+                INSERT INTO merchant_publication_channels
+                    (display_name, channel_key, channel_ref, is_active)
+                VALUES (?, ?, ?, 1)
+                """,
+                (
+                    "קהילה בוט ראשי https://t.me/+7IU8He3EuAlmMjFk",
+                    "7iu8he3eualmmjfk",
+                    "https://t.me/+7IU8He3EuAlmMjFk",
+                ),
+            )
+            inner.commit()
+
+        channels = repo.list_channels()
+        assert len(channels) == 1
+        assert channels[0]["display_name"] == "קהילה בוט ראשי"
+    conn.close()

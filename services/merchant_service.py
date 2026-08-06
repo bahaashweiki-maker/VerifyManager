@@ -42,6 +42,11 @@ from __future__ import annotations
 import logging
 
 from database.database import get_connection
+from repositories.merchant_channels_repository import list_channels_by_keys
+from repositories.merchant_publication_repository import (
+    list_merchant_allowed_channels,
+    list_merchant_required_channels,
+)
 from services.permission_service import has_permission, get_user_permissions
 from services.verified_users_service import get_user_general_permissions
 
@@ -150,13 +155,24 @@ def list_merchant_profiles() -> list[dict]:
                 """
                 SELECT
                     uta.telegram_id,
-                    u.full_name,
-                    u.username,
+                    COALESCE(u.full_name, v.full_name) AS full_name,
+                    COALESCE(u.username, v.username) AS username,
                     uta.assigned_at
                 FROM user_type_assignments uta
                 LEFT JOIN users u ON u.telegram_id = uta.telegram_id
+                LEFT JOIN (
+                    SELECT vv.telegram_id, vv.full_name, vv.username
+                    FROM verifications vv
+                    INNER JOIN (
+                        SELECT telegram_id, MAX(id) AS max_id
+                        FROM verifications
+                        GROUP BY telegram_id
+                    ) latest
+                        ON latest.telegram_id = vv.telegram_id
+                       AND latest.max_id = vv.id
+                ) v ON v.telegram_id = uta.telegram_id
                 WHERE uta.type_key = 'merchant'
-                ORDER BY COALESCE(u.full_name, u.username, CAST(uta.telegram_id AS TEXT)) COLLATE NOCASE ASC
+                ORDER BY COALESCE(u.full_name, v.full_name, u.username, v.username, CAST(uta.telegram_id AS TEXT)) COLLATE NOCASE ASC
                 """
             ).fetchall()
         return rows
@@ -192,3 +208,11 @@ def can_merchant_start_publication(telegram_id: int) -> bool:
     return bool(flags.get("user.publish.create")) and bool(
         flags.get("user.media.image") or flags.get("user.media.video")
     )
+
+
+def list_merchant_allowed_channel_records(telegram_id: int) -> list[dict]:
+    return list_channels_by_keys(list_merchant_allowed_channels(telegram_id))
+
+
+def list_merchant_required_channel_records(telegram_id: int) -> list[dict]:
+    return list_channels_by_keys(list_merchant_required_channels(telegram_id))

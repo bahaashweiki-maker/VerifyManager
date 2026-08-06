@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 MERCHANT_BASE_PERMISSION = "merchant"
 MERCHANT_HOURLY_PERMISSION = "merchant.publish.hourly"
 MERCHANT_CHANNEL_PREFIX = "merchant.publish.channel."
+MERCHANT_REQUIRED_CHANNEL_PREFIX = "merchant.required.channel."
 
 
 def normalize_channel_key(raw: str) -> str:
@@ -55,6 +56,40 @@ def _channel_permission_key(channel_key: str) -> str:
     if not key:
         return ""
     return f"{MERCHANT_CHANNEL_PREFIX}{key}"
+
+
+def _required_channel_permission_key(channel_key: str) -> str:
+    key = normalize_channel_key(channel_key)
+    if not key:
+        return ""
+    return f"{MERCHANT_REQUIRED_CHANNEL_PREFIX}{key}"
+
+
+def _list_channel_keys_by_prefix(telegram_id: int, prefix: str) -> list[str]:
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT permission
+                FROM user_permissions
+                WHERE telegram_id = ?
+                  AND permission LIKE ?
+                ORDER BY permission ASC
+                """,
+                (telegram_id, f"{prefix}%"),
+            ).fetchall()
+        channels: list[str] = []
+        for row in rows:
+            permission = str(row[0] or "")
+            if not permission.startswith(prefix):
+                continue
+            channel_key = permission[len(prefix):]
+            if channel_key:
+                channels.append(channel_key)
+        return channels
+    except sqlite3.Error as exc:
+        logger.error("_list_channel_keys_by_prefix(%s, %s) failed: %s", telegram_id, prefix, exc)
+        return []
 
 
 def list_merchant_ids() -> list[int]:
@@ -129,30 +164,12 @@ def set_merchant_hourly_publish(
 
 def list_merchant_allowed_channels(telegram_id: int) -> list[str]:
     """Return normalized channel keys that merchant is allowed to publish to."""
-    try:
-        with get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT permission
-                FROM user_permissions
-                WHERE telegram_id = ?
-                  AND permission LIKE ?
-                ORDER BY permission ASC
-                """,
-                (telegram_id, f"{MERCHANT_CHANNEL_PREFIX}%"),
-            ).fetchall()
-        channels: list[str] = []
-        for row in rows:
-            permission = str(row[0] or "")
-            if not permission.startswith(MERCHANT_CHANNEL_PREFIX):
-                continue
-            channel_key = permission[len(MERCHANT_CHANNEL_PREFIX) :]
-            if channel_key:
-                channels.append(channel_key)
-        return channels
-    except sqlite3.Error as exc:
-        logger.error("list_merchant_allowed_channels(%s) failed: %s", telegram_id, exc)
-        return []
+    return _list_channel_keys_by_prefix(telegram_id, MERCHANT_CHANNEL_PREFIX)
+
+
+def list_merchant_required_channels(telegram_id: int) -> list[str]:
+    """Return normalized channel keys the merchant must join before publishing."""
+    return _list_channel_keys_by_prefix(telegram_id, MERCHANT_REQUIRED_CHANNEL_PREFIX)
 
 
 def grant_merchant_channel_access(
@@ -221,4 +238,51 @@ def merchant_can_publish_to_channel(telegram_id: int, channel_key: str) -> bool:
         return row is not None
     except sqlite3.Error as exc:
         logger.error("merchant_can_publish_to_channel(%s, %s) failed: %s", telegram_id, channel_key, exc)
+        return False
+
+
+def grant_merchant_required_channel(
+    telegram_id: int,
+    channel_key: str,
+    granted_by: int | None = None,
+) -> bool:
+    """Require merchant to join a channel before opening publication flow."""
+    permission = _required_channel_permission_key(channel_key)
+    if not permission:
+        return False
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_permissions
+                    (telegram_id, permission, granted_by)
+                VALUES (?, ?, ?)
+                """,
+                (telegram_id, permission, granted_by),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("grant_merchant_required_channel(%s, %s) failed: %s", telegram_id, channel_key, exc)
+        return False
+
+
+def revoke_merchant_required_channel(telegram_id: int, channel_key: str) -> bool:
+    """Remove required-join channel from merchant gating."""
+    permission = _required_channel_permission_key(channel_key)
+    if not permission:
+        return False
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM user_permissions
+                WHERE telegram_id = ? AND permission = ?
+                """,
+                (telegram_id, permission),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("revoke_merchant_required_channel(%s, %s) failed: %s", telegram_id, channel_key, exc)
         return False

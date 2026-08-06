@@ -26,9 +26,12 @@ from repositories.merchant_channels_repository import (
 )
 from repositories.merchant_publication_repository import (
     grant_merchant_channel_access,
+    grant_merchant_required_channel,
     list_merchant_allowed_channels,
+    list_merchant_required_channels,
     merchant_has_hourly_publish,
     revoke_merchant_channel_access,
+    revoke_merchant_required_channel,
     set_merchant_hourly_publish,
 )
 from services.merchant_service import list_merchant_profiles
@@ -51,6 +54,8 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _show_channels(update, context)
     if data == "MERCHANT_ADM_CHANNEL_ADD":
         return await _prompt_add_channel(update, context)
+    if data.startswith("MERCHANT_ADM_CHANNEL_VIEW_"):
+        return await _show_channel_details(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_CHANNEL_DEL_"):
         return await _delete_channel(update, context, int(data.rsplit("_", 1)[1]))
     if data == "MERCHANT_ADM_LIST":
@@ -61,10 +66,16 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _toggle_hourly(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_ASSIGN_"):
         return await _show_channel_assignment(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_REQUIRED_"):
+        return await _show_required_assignment(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_CH_TOGGLE_"):
         raw = data.removeprefix("MERCHANT_ADM_CH_TOGGLE_")
         telegram_id_raw, channel_id_raw = raw.split("_", 1)
         return await _toggle_merchant_channel(update, context, int(telegram_id_raw), int(channel_id_raw))
+    if data.startswith("MERCHANT_ADM_REQ_TOGGLE_"):
+        raw = data.removeprefix("MERCHANT_ADM_REQ_TOGGLE_")
+        telegram_id_raw, channel_id_raw = raw.split("_", 1)
+        return await _toggle_required_channel(update, context, int(telegram_id_raw), int(channel_id_raw))
     if data == "MERCHANT_ADM_BACK":
         return await _show_main_menu(update, context)
 
@@ -122,7 +133,10 @@ async def _show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     rows = []
     for channel in channels:
         rows.append([
-            InlineKeyboardButton(f"📡 {channel['display_name']}", callback_data="IGNORE"),
+            InlineKeyboardButton(
+                f"📡 {channel['display_name']}",
+                callback_data=f"MERCHANT_ADM_CHANNEL_VIEW_{channel['id']}",
+            ),
             InlineKeyboardButton("🗑", callback_data=f"MERCHANT_ADM_CHANNEL_DEL_{channel['id']}")
         ])
     rows.append([InlineKeyboardButton("➕ הוסף ערוץ", callback_data="MERCHANT_ADM_CHANNEL_ADD")])
@@ -141,13 +155,42 @@ async def _show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def _show_channel_details(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> None:
+    _clear_state(context)
+    channel = get_channel_by_id(channel_id)
+    if channel is None:
+        await update.callback_query.answer("⚠️ ערוץ לא נמצא", show_alert=True)
+        return await _show_channels(update, context)
+
+    await update.callback_query.edit_message_text(
+        (
+            "📡 <b>פרטי ערוץ</b>\n\n"
+            f"שם: <b>{channel['display_name']}</b>\n"
+            f"מפתח: <code>{channel['channel_key']}</code>\n"
+            f"מזהה/קישור: <code>{channel['channel_ref']}</code>"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑 הסר ערוץ", callback_data=f"MERCHANT_ADM_CHANNEL_DEL_{channel['id']}")],
+            [InlineKeyboardButton("⬅️ חזרה לערוצים", callback_data="MERCHANT_ADM_CHANNELS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
 async def _prompt_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     context.user_data[_STATE] = _WAIT_CHANNEL
     context.user_data[_CHAT_ID] = query.message.chat_id
     context.user_data[_MSG_ID] = query.message.message_id
     await query.edit_message_text(
-        "📡 <b>הוספת ערוץ</b>\n\nשלח עכשיו @channel או קישור מלא ל-t.me",
+        (
+            "📡 <b>הוספת ערוץ</b>\n\n"
+            "פורמטים נתמכים:\n"
+            "• @channel\n"
+            "• https://t.me/channel\n"
+            "• שם | @channel\n"
+            "• שם | קישור הזמנה פרטי | -1001234567890"
+        ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ ביטול", callback_data="MERCHANT_ADM_CHANNELS")],
         ]),
@@ -187,7 +230,18 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
         await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
         return await _show_merchants(update, context)
 
-    channels = list_merchant_allowed_channels(telegram_id)
+    channels, required_channels = _sanitize_merchant_channel_permissions(telegram_id)
+    all_channels = list_channels(active_only=True)
+    by_key = {c["channel_key"]: c["display_name"] for c in all_channels}
+
+    def _format_channel_list(keys: list[str]) -> str:
+        if not keys:
+            return "אין"
+        names = [by_key.get(k, k) for k in keys]
+        if len(names) > 4:
+            return ", ".join(names[:4]) + f" ... (+{len(names) - 4})"
+        return ", ".join(names)
+
     hourly = merchant_has_hourly_publish(telegram_id)
     hourly_label = "פעיל" if hourly else "כבוי"
 
@@ -196,10 +250,14 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
             f"🏪 <b>{merchant['display_name']}</b>\n"
             f"🆔 <code>{telegram_id}</code>\n\n"
             f"⏱️ פרסום כל שעה: <b>{hourly_label}</b>\n"
-            f"📡 ערוצים משויכים: <b>{len(channels)}</b>"
+            f"📡 ערוצי פרסום: <b>{len(channels)}</b>\n"
+            f"🔐 ערוצי חובה: <b>{len(required_channels)}</b>\n\n"
+            f"📡 משויך לפרסום: <b>{_format_channel_list(channels)}</b>\n"
+            f"🔐 חובת הצטרפות: <b>{_format_channel_list(required_channels)}</b>"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 שיוך ערוצים", callback_data=f"MERCHANT_ADM_ASSIGN_{telegram_id}")],
+            [InlineKeyboardButton("🔐 חובת הצטרפות", callback_data=f"MERCHANT_ADM_REQUIRED_{telegram_id}")],
             [InlineKeyboardButton("⏱️ הפעל/כבה כל שעה", callback_data=f"MERCHANT_ADM_HOURLY_{telegram_id}")],
             [InlineKeyboardButton("🔙 חזרה לסוחרים", callback_data="MERCHANT_ADM_LIST")],
         ]),
@@ -227,7 +285,7 @@ async def _show_channel_assignment(update: Update, context: ContextTypes.DEFAULT
         await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
         return await _show_merchants(update, context)
 
-    assigned = set(list_merchant_allowed_channels(telegram_id))
+    assigned = set(_sanitize_merchant_channel_permissions(telegram_id)[0])
     channels = list_channels(active_only=True)
     rows = []
     for channel in channels:
@@ -241,7 +299,7 @@ async def _show_channel_assignment(update: Update, context: ContextTypes.DEFAULT
     rows.append([InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")])
 
     await update.callback_query.edit_message_text(
-        f"📡 <b>שיוך ערוצים</b>\n\nסוחר: <b>{merchant['display_name']}</b>",
+        f"📡 <b>ערוצי פרסום</b>\n\nסוחר: <b>{merchant['display_name']}</b>",
         reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML",
     )
@@ -272,9 +330,86 @@ async def _toggle_merchant_channel(
     await _show_channel_assignment(update, context, telegram_id)
 
 
+async def _show_required_assignment(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_id: int) -> None:
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants(update, context)
+
+    assigned = set(_sanitize_merchant_channel_permissions(telegram_id)[1])
+    channels = list_channels(active_only=True)
+    rows = []
+    for channel in channels:
+        mark = "✅" if channel["channel_key"] in assigned else "⬜"
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {channel['display_name']}",
+                callback_data=f"MERCHANT_ADM_REQ_TOGGLE_{telegram_id}_{channel['id']}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")])
+
+    await update.callback_query.edit_message_text(
+        (
+            f"🔐 <b>ערוצי חובה להצטרפות</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            f"הסוחר חייב להיות חבר בכל הערוצים המסומנים לפני פתיחת פרסום."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _toggle_required_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+    channel_id: int,
+) -> None:
+    channel = get_channel_by_id(channel_id)
+    if channel is None:
+        await update.callback_query.answer("⚠️ ערוץ לא נמצא", show_alert=True)
+        return await _show_required_assignment(update, context, telegram_id)
+
+    assigned = set(list_merchant_required_channels(telegram_id))
+    if channel["channel_key"] in assigned:
+        ok = revoke_merchant_required_channel(telegram_id, channel["channel_key"])
+    else:
+        ok = grant_merchant_required_channel(
+            telegram_id,
+            channel["channel_key"],
+            granted_by=update.callback_query.from_user.id,
+        )
+
+    await update.callback_query.answer("✅ נשמר" if ok else "❌ שגיאה", show_alert=not ok)
+    await _show_required_assignment(update, context, telegram_id)
+
+
 def _get_merchant_or_none(telegram_id: int):
     merchants = list_merchant_profiles()
     return next((m for m in merchants if int(m["telegram_id"]) == int(telegram_id)), None)
+
+
+def _sanitize_merchant_channel_permissions(telegram_id: int) -> tuple[list[str], list[str]]:
+    """Remove stale channel permissions that no longer match active channel keys."""
+    active_channel_keys = {c["channel_key"] for c in list_channels(active_only=True)}
+
+    allowed = list_merchant_allowed_channels(telegram_id)
+    required = list_merchant_required_channels(telegram_id)
+
+    stale_allowed = [key for key in allowed if key not in active_channel_keys]
+    stale_required = [key for key in required if key not in active_channel_keys]
+
+    for key in stale_allowed:
+        revoke_merchant_channel_access(telegram_id, key)
+    for key in stale_required:
+        revoke_merchant_required_channel(telegram_id, key)
+
+    if stale_allowed or stale_required:
+        allowed = list_merchant_allowed_channels(telegram_id)
+        required = list_merchant_required_channels(telegram_id)
+
+    return allowed, required
 
 
 def _back_to_channels_kb() -> InlineKeyboardMarkup:
