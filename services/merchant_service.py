@@ -181,6 +181,11 @@ def list_merchant_profiles() -> list[dict]:
         return []
 
 
+def get_merchant_profile(telegram_id: int) -> dict | None:
+    profiles = list_merchant_profiles()
+    return next((row for row in profiles if int(row.get("telegram_id") or 0) == int(telegram_id)), None)
+
+
 def _row_factory(cursor, row):
     fields = [d[0] for d in cursor.description]
     data = dict(zip(fields, row))

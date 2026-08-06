@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from database.database import create_verification, now_il
 from app.engine.publishing_renderer import render_home
 from services.verify_admin_service import get_latest_verification_by_telegram_id
+from services.admin_service import is_super_admin
+from services.permission_service import has_permission
 
 ADMIN_CHAT_ID = 1751674910   # לשנות למזהה המנהל
 
@@ -194,6 +196,11 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get(user_id)
 
     if not state:
+        # Admins may send free text while using management panels (e.g. merchant channel add).
+        # Do not delete or warn in that case.
+        if is_super_admin(user_id) or has_permission(user_id, "admin"):
+            return
+
         try:
             await context.bot.delete_message(chat_id, update.message.message_id)
         except:

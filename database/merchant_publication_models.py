@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS merchant_publication_channels (
 
 CREATE INDEX IF NOT EXISTS idx_merchant_pub_channels_active
     ON merchant_publication_channels (is_active, display_name);
+
+CREATE TABLE IF NOT EXISTS merchant_reviews (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id     INTEGER NOT NULL,
+    reviewer_id     INTEGER NOT NULL,
+    reviewer_name   TEXT,
+    review_text     TEXT NOT NULL,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_reviews_merchant
+    ON merchant_reviews (merchant_id, created_at DESC);
 """
 
 

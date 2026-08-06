@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -264,6 +265,39 @@ def count_publication_recipients(target_type: str, target_value: str | None) -> 
     return len(_resolve_recipients(target_type, target_value))
 
 
+def _parse_chat_list_target(target_value: str | None) -> list[str | int]:
+    raw = (target_value or "").strip()
+    if not raw:
+        return []
+
+    candidates: list[object]
+    try:
+        decoded = json.loads(raw)
+        if isinstance(decoded, list):
+            candidates = decoded
+        else:
+            candidates = [decoded]
+    except Exception:
+        candidates = [part.strip() for part in raw.split(",") if part.strip()]
+
+    refs: list[str | int] = []
+    for item in candidates:
+        if isinstance(item, int):
+            refs.append(item)
+            continue
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if text.startswith("-100"):
+            try:
+                refs.append(int(text))
+                continue
+            except Exception:
+                pass
+        refs.append(text)
+    return refs
+
+
 def list_available_publication_permissions(limit: int = 200) -> list[str]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -322,13 +356,101 @@ def _resolve_recipients(target_type: str, target_value: str | None) -> list[tupl
                 """,
                 (target_value.strip(),),
             ).fetchall()
+        elif target_type == "chat_list":
+            rows = [(None, chat_ref) for chat_ref in _parse_chat_list_target(target_value)]
         else:
             rows = []
     return [
-        (int(r[0]), int(r[1]))
+        (
+            int(r[0]) if r and r[0] is not None else None,
+            int(r[1]) if isinstance(r[1], int) else r[1],
+        )
         for r in rows
-        if r and r[0] is not None and r[1] is not None
+        if r and r[1] is not None
     ]
+
+
+async def run_publication_now(bot: Bot, publication_id: int) -> dict:
+    return await dispatch_publication(bot, publication_id)
+
+
+async def schedule_publication_once(
+    context: ContextTypes.DEFAULT_TYPE,
+    publication_id: int,
+    run_at: datetime,
+    *,
+    job_prefix: str = "pub_once",
+) -> None:
+    if not context.job_queue:
+        return
+    for job in context.job_queue.jobs():
+        if job.name == f"{job_prefix}_{publication_id}":
+            job.schedule_removal()
+    context.job_queue.run_once(
+        _scheduled_publication_job_callback,
+        when=run_at,
+        data={"publication_id": publication_id, "job_prefix": job_prefix},
+        name=f"{job_prefix}_{publication_id}",
+    )
+
+
+async def schedule_publication_recurring(
+    context: ContextTypes.DEFAULT_TYPE,
+    publication_id: int,
+    run_at: datetime,
+    *,
+    job_prefix: str = "pub_repeat",
+) -> None:
+    if not context.job_queue:
+        return
+    for job in context.job_queue.jobs():
+        if job.name == f"{job_prefix}_{publication_id}":
+            job.schedule_removal()
+    context.job_queue.run_once(
+        _scheduled_publication_job_callback,
+        when=run_at,
+        data={"publication_id": publication_id, "job_prefix": job_prefix},
+        name=f"{job_prefix}_{publication_id}",
+    )
+
+
+async def _scheduled_publication_job_callback(job_context) -> None:
+    data = job_context.job.data or {}
+    publication_id = int(data.get("publication_id") or 0)
+    job_prefix = str(data.get("job_prefix") or "")
+    if publication_id <= 0:
+        return
+
+    publication = get_publication(publication_id)
+    if not publication:
+        return
+
+    status = str(publication.get("status") or "")
+    is_recurring = int(publication.get("is_recurring") or 0) == 1
+    if job_prefix.endswith("once") and status != "scheduled":
+        return
+    if job_prefix.endswith("repeat") and (status != "active" or not is_recurring):
+        return
+
+    await dispatch_publication(job_context.bot, publication_id)
+
+    if job_prefix.endswith("repeat"):
+        refreshed = get_publication(publication_id)
+        if not refreshed:
+            return
+        next_run_raw = str(refreshed.get("next_run_at") or "").strip()
+        if not next_run_raw:
+            return
+        try:
+            next_run_dt = datetime.strptime(next_run_raw, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return
+        await schedule_publication_recurring(
+            job_context,
+            publication_id,
+            next_run_dt,
+            job_prefix=job_prefix,
+        )
 
 
 def encode_publication_note(text: str) -> str:

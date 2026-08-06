@@ -19,7 +19,13 @@ from services.verify_service import (
 from services.subscriber_publication_service import handle_publication_note_callback
 
 from app.engine.page_engine import PageEngine
-from app.engine.publishing_renderer import render_home, handle_user_nav, handle_contact_input
+from app.engine.publishing_renderer import (
+    handle_contact_input,
+    handle_merchant_input,
+    handle_merchant_start_payload,
+    handle_user_nav,
+    render_home,
+)
 from datetime import datetime
 from services.verified_users_service import is_suspended, get_active_suspension
 
@@ -184,6 +190,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     context.user_data.clear()
     context.user_data["support_chat_suppressed"] = True
+    if await handle_merchant_start_payload(update, context):
+        return
     await render_home(context.bot, update.effective_chat.id, telegram_id=update.effective_user.id)
 
 
@@ -375,12 +383,12 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # קלט ממודול ניהול מאומתים (כולל הודעה בשיחה ע"י אדמין)
     if context.user_data.get("vusers_state") and update.message and update.message.text:
         return await handle_verified_users_input(update, context)
+    # קלט ממודול ניהול סוחרים חייב לקבל עדיפות כדי לא להיבלע ע"י states אחרים
+    if context.user_data.get("merchant_admin_state") and update.message and update.message.text:
+        return await handle_merchant_admin_input(update, context)
     # קלט ממודול מנויים (חיפוש)
     if context.user_data.get("subs_state") and update.message:
         return await handle_subscriptions_input(update, context)
-    # קלט ממודול ניהול סוחרים
-    if context.user_data.get("merchant_admin_state") and update.message and update.message.text:
-        return await handle_merchant_admin_input(update, context)
     # קלט ממסך האימות הישן (VERIFY_MESSAGE_) חייב להישאר מופרד ממסלול שיחות האימות
     if update.message and update.effective_user:
         admin_state = context.user_data.get(update.effective_user.id)
@@ -402,6 +410,14 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         try:
             handled = await handle_contact_input(update, context)
+            if handled:
+                return
+        except Exception:
+            pass
+    # קלט מסכי סוחר: יצירת פרסום / חוות דעת / פנייה לסוחר
+    if update.message:
+        try:
+            handled = await handle_merchant_input(update, context)
             if handled:
                 return
         except Exception:

@@ -104,7 +104,13 @@ async def handle_merchant_admin_input(update: Update, context: ContextTypes.DEFA
             context,
             chat_id,
             msg_id,
-            "❌ לא ניתן לשמור ערוץ. שלח @channel או קישור t.me תקין.",
+            (
+                "❌ לא ניתן לשמור ערוץ.\n\n"
+                "פורמט ציבורי תקין לדוגמה:\n"
+                "• @mychannel\n"
+                "• https://t.me/mychannel\n"
+                "• שם ערוץ | @mychannel"
+            ),
             _back_to_channels_kb(),
         )
 
