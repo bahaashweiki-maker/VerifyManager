@@ -60,6 +60,7 @@ from services.merchant_service import (
 from services.subscriber_publication_service import (
     count_open_creator_publications,
     create_publication_record,
+    get_creator_last_sent_at,
     get_publication,
     list_creator_publications,
     remove_publication,
@@ -131,6 +132,7 @@ _MERCHANT_START_HOME = "merchant_home"
 _MERCHANT_START_REVIEW = "merchant_review_"
 _MERCHANT_START_REVIEWS = "merchant_reviews_"
 _MERCHANT_START_CONTACT = "merchant_contact_"
+_MERCHANT_BUILD_TAG = "M-2026-08-06-3"
 
 _CONTACT_CATEGORIES: dict[str, str] = {
     "general": "💬 פנייה כללית",
@@ -197,9 +199,54 @@ def _get_merchant_draft(context: ContextTypes.DEFAULT_TYPE, selected_keys: Optio
     return draft
 
 
-def _next_full_hour(now: datetime) -> datetime:
-    candidate = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    return candidate
+def _reset_merchant_publication_state(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    clear_selection: bool,
+) -> None:
+    context.user_data.pop(_MERCHANT_DRAFT_KEY, None)
+    context.user_data.pop(_MERCHANT_EDIT_PUB_ID_KEY, None)
+    context.user_data.pop(_MERCHANT_STATE_KEY, None)
+    if clear_selection:
+        context.user_data.pop(_MERCHANT_SELECTED_CHANNELS_KEY, None)
+
+
+def _next_hour_from_now(now: datetime) -> datetime:
+    return (now + timedelta(hours=1)).replace(second=0, microsecond=0)
+
+
+def _manual_send_wait_seconds(merchant_id: int) -> int:
+    last_sent_raw = get_creator_last_sent_at(merchant_id)
+    if not last_sent_raw:
+        return 0
+    try:
+        last_sent = datetime.strptime(last_sent_raw, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return 0
+    elapsed = (now_il().replace(tzinfo=None) - last_sent).total_seconds()
+    remaining = int(3600 - elapsed)
+    return remaining if remaining > 0 else 0
+
+
+def _format_wait_minutes_seconds(wait_seconds: int) -> str:
+    mins = wait_seconds // 60
+    secs = wait_seconds % 60
+    return f"{mins:02d}:{secs:02d}"
+
+
+async def _send_manual_cooldown_message(bot: Bot, chat_id: int, wait_seconds: int) -> None:
+    await bot.send_message(
+        chat_id,
+        (
+            "⏳ <b>שליחה מיידית מוגבלת לפעם בשעה</b>\n\n"
+            f"אפשר לשלוח שוב בעוד: <b>{_format_wait_minutes_seconds(wait_seconds)}</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
+            [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+        ]),
+    )
 
 
 def _draft_media_summary(draft: dict) -> str:
@@ -225,6 +272,10 @@ def _publication_status_label(status: str) -> str:
         "canceled": "בוטל",
     }
     return mapping.get((status or "").strip(), status or "לא ידוע")
+
+
+def _merchant_publication_display_title(pub: dict, fallback_id: int) -> str:
+    return f"פרסום סוחר #{fallback_id}"
 
 
 def _parse_chat_refs_from_target_value(target_value: str | None) -> list[str]:
@@ -279,9 +330,11 @@ async def _show_merchant_publication_list(
         for pub in rows_data:
             pid = int(pub.get("id") or 0)
             status = _publication_status_label(str(pub.get("status") or ""))
-            title = (str(pub.get("title") or "").strip() or f"פרסום #{pid}")[:26]
-            lines.append(f"• {title} — {status}")
-            rows.append([InlineKeyboardButton(f"📄 {title} ({status})", callback_data=f"pub:user:merchant:pubview:{pid}")])
+            title = _merchant_publication_display_title(pub, pid)
+            next_run = str(pub.get("next_run_at") or "").strip()
+            short_next = f" | הבא: {next_run}" if next_run else ""
+            lines.append(f"• {title} — {status}{short_next}")
+            rows.append([InlineKeyboardButton(f"📄 {title[:22]} · {status}", callback_data=f"pub:user:merchant:pubview:{pid}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
     await bot.send_message(
         chat_id,
@@ -301,17 +354,20 @@ async def _show_merchant_publication_details(
         await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
         return
     status = _publication_status_label(str(pub.get("status") or ""))
-    title = str(pub.get("title") or "").strip() or f"פרסום #{publication_id}"
+    title = _merchant_publication_display_title(pub, publication_id)
     next_run_at = str(pub.get("next_run_at") or "").strip() or "-"
     content_preview = (str(pub.get("content_text") or "").strip() or "ללא טקסט")[:220]
+    media_line = _draft_media_summary({"media_type": pub.get("media_type"), "file_id": pub.get("file_id")})
 
     rows = [
         [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"pub:user:merchant:pubpreview:{publication_id}")],
         [InlineKeyboardButton("✏️ ערוך ושמור", callback_data=f"pub:user:merchant:pubedit:{publication_id}")],
-        [InlineKeyboardButton("🚀 פרסם עכשיו", callback_data=f"pub:user:merchant:pubrun:{publication_id}")],
     ]
     if int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active":
+        rows.append([InlineKeyboardButton("📨 שליחה מיידית נוספת", callback_data=f"pub:user:merchant:pubrun:{publication_id}")])
         rows.append([InlineKeyboardButton("⛔ עצור שעתי", callback_data=f"pub:user:merchant:pubstop:{publication_id}")])
+    else:
+        rows.append([InlineKeyboardButton("🚀 פרסם עכשיו", callback_data=f"pub:user:merchant:pubrun:{publication_id}")])
     rows.append([InlineKeyboardButton("🗑️ מחק פרסום", callback_data=f"pub:user:merchant:pubdel:{publication_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data="pub:user:merchant:mypubs")])
 
@@ -320,6 +376,7 @@ async def _show_merchant_publication_details(
         (
             f"📄 <b>{title}</b>\n\n"
             f"סטטוס: <b>{status}</b>\n"
+            f"🖼️ מדיה: <b>{media_line}</b>\n"
             f"🕒 הפעלה הבאה: <b>{next_run_at}</b>\n\n"
             f"{content_preview}"
         ),
@@ -347,6 +404,7 @@ async def _send_merchant_compose_screen(
     media_summary = _draft_media_summary(draft)
     edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
     mode_line = f"✏️ מצב עריכה לפרסום #{edit_pub_id}" if edit_pub_id > 0 else "🆕 פרסום חדש"
+    hourly_only = merchant_has_hourly_publish(merchant_id)
 
     rows = [
         [InlineKeyboardButton("📡 בחר ערוצים", callback_data="pub:user:merchant:start")],
@@ -356,7 +414,7 @@ async def _send_merchant_compose_screen(
         rows.append([InlineKeyboardButton("🖼️ העלה מדיה", callback_data="pub:user:merchant:setmedia")])
     rows.append([InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data="pub:user:merchant:preview")])
     rows.append([InlineKeyboardButton("🚀 פרסם עכשיו", callback_data="pub:user:merchant:sendnow")])
-    if capability_flags.get("user.publish.schedule") and merchant_has_hourly_publish(merchant_id):
+    if capability_flags.get("user.publish.schedule") and hourly_only:
         rows.append([InlineKeyboardButton("⏱️ הפעל אוטומטי כל שעה", callback_data="pub:user:merchant:sendhourly")])
     rows.append([InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
@@ -365,12 +423,13 @@ async def _send_merchant_compose_screen(
         chat_id,
         (
             "🧾 <b>יצירת פרסום לסוחר</b>\n\n"
-            f"{mode_line}\n"
-            f"📡 ערוצים נבחרים: <b>{len(selected_names)}</b>\n"
+            + f"{mode_line}\n"
+            + ("⏱️ מצב חשבון: <b>שעתי</b> (ידני פעם בשעה + אוטומטי כל שעה)\n" if hourly_only else "")
+            + f"📡 ערוצים נבחרים: <b>{len(selected_names)}</b>\n"
             + ("\n".join(f"• {name}" for name in selected_names[:8]) if selected_names else "אין ערוצים נבחרים")
             + "\n\n"
-            f"🖼️ מדיה: <b>{media_summary}</b>\n"
-            f"💬 טקסט:\n{content_preview}"
+            + f"🖼️ מדיה: <b>{media_summary}</b>\n"
+            + f"💬 טקסט:\n{content_preview}"
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(rows),
@@ -447,6 +506,11 @@ async def _run_merchant_publication_send(
     *,
     recurring_hourly: bool,
 ) -> None:
+    wait_seconds = _manual_send_wait_seconds(merchant_id)
+    if wait_seconds > 0:
+        await _send_manual_cooldown_message(bot, chat_id, wait_seconds)
+        return
+
     selected = _get_selected_merchant_channels(context, allowed_channel_records)
     selected_channels = [
         ch for ch in allowed_channel_records if str(ch.get("channel_key") or "") in selected
@@ -475,7 +539,7 @@ async def _run_merchant_publication_send(
     bot_username = await _get_bot_username(bot, context)
     buttons = _build_merchant_publication_button_defs(bot_username, merchant_id)
     target_value = json.dumps(refs, ensure_ascii=False)
-    title = f"Merchant publication {merchant_id}"
+    title = f"פרסום סוחר #{merchant_id}"
     edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
 
     if edit_pub_id <= 0 and not capability_flags.get("user.publish.multi"):
@@ -492,7 +556,6 @@ async def _run_merchant_publication_send(
             return
 
     if recurring_hourly:
-        next_run_dt = _next_full_hour(now_il().replace(tzinfo=None))
         if edit_pub_id > 0:
             ok = update_publication_record(
                 edit_pub_id,
@@ -506,8 +569,8 @@ async def _run_merchant_publication_send(
                 is_recurring=1,
                 repeat_every_minutes=60,
                 recurrence_type="interval",
-                next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                scheduled_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                next_run_at=None,
+                scheduled_at=None,
             )
             if not ok:
                 await bot.send_message(chat_id, "❌ שגיאה בעדכון פרסום שעתי.")
@@ -527,20 +590,32 @@ async def _run_merchant_publication_send(
                 is_recurring=1,
                 repeat_every_minutes=60,
                 recurrence_type="interval",
-                next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                next_run_at=None,
                 buttons=buttons,
             )
         if pub_id <= 0:
             await bot.send_message(chat_id, "❌ שגיאה בשמירת פרסום שעתי.")
             return
-        await schedule_publication_recurring(context, pub_id, next_run_dt, job_prefix="merchant_repeat")
+        result = await run_publication_now(bot, pub_id)
+        refreshed = get_publication(pub_id) or {}
+        next_run_raw = str(refreshed.get("next_run_at") or "").strip()
+        next_run_text = "-"
+        if next_run_raw:
+            try:
+                next_run_dt = datetime.strptime(next_run_raw, "%Y-%m-%d %H:%M:%S")
+                await schedule_publication_recurring(context, pub_id, next_run_dt, job_prefix="merchant_repeat")
+                next_run_text = next_run_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                next_run_text = next_run_raw
         context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
         await bot.send_message(
             chat_id,
             (
-                "✅ <b>הפרסום השעתי הופעל</b>\n\n"
-                f"📡 ערוצים: <b>{len(selected_channels)}</b>\n"
-                f"🕒 הפעלה ראשונה: <b>{next_run_dt.strftime('%Y-%m-%d %H:%M')}</b>"
+                "✅ <b>הפרסום נשלח והאוטומציה הופעלה</b>\n\n"
+                f"📨 נשלחו עכשיו: <b>{result.get('sent', 0)}</b>\n"
+                f"❌ נכשלו: <b>{result.get('failed', 0)}</b>\n"
+                f"🎯 יעדים ייחודיים: <b>{result.get('total', 0)}</b>\n"
+                f"🕒 פרסום הבא: <b>{next_run_text}</b>"
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
@@ -548,6 +623,13 @@ async def _run_merchant_publication_send(
             ]),
         )
         return
+
+    existing_pub = get_publication(edit_pub_id) if edit_pub_id > 0 else None
+    keep_recurring = bool(
+        existing_pub
+        and int(existing_pub.get("is_recurring") or 0) == 1
+        and str(existing_pub.get("status") or "") == "active"
+    )
 
     if edit_pub_id > 0:
         ok = update_publication_record(
@@ -558,12 +640,12 @@ async def _run_merchant_publication_send(
             file_id=file_id,
             target_type="chat_list",
             target_value=target_value,
-            status="sending",
-            is_recurring=0,
-            repeat_every_minutes=None,
-            recurrence_type=None,
-            next_run_at=None,
-            scheduled_at=None,
+            status="active" if keep_recurring else "sending",
+            is_recurring=1 if keep_recurring else 0,
+            repeat_every_minutes=int(existing_pub.get("repeat_every_minutes") or 60) if keep_recurring else None,
+            recurrence_type=str(existing_pub.get("recurrence_type") or "interval") if keep_recurring else None,
+            next_run_at=str(existing_pub.get("next_run_at") or "").strip() if keep_recurring else None,
+            scheduled_at=str(existing_pub.get("scheduled_at") or "").strip() if keep_recurring else None,
         )
         if not ok:
             await bot.send_message(chat_id, "❌ שגיאה בעדכון פרסום.")
@@ -588,13 +670,21 @@ async def _run_merchant_publication_send(
 
     result = await run_publication_now(bot, pub_id)
     context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
+    headline = "✅ <b>הפרסום נשלח</b>"
+    if edit_pub_id > 0:
+        headline = "✅ <b>הפרסום עודכן ונשלח</b>"
+    targets_line = "\n".join(f"• {str(ch.get('display_name') or ch.get('channel_key') or '')}" for ch in selected_channels[:6])
+    if len(selected_channels) > 6:
+        targets_line += f"\n• ועוד {len(selected_channels) - 6}"
     await bot.send_message(
         chat_id,
         (
-            "✅ <b>הפרסום נשלח</b>\n\n"
+            f"{headline}\n\n"
             f"📨 נשלחו: <b>{result.get('sent', 0)}</b>\n"
             f"❌ נכשלו: <b>{result.get('failed', 0)}</b>\n"
-            f"📡 יעד כולל: <b>{result.get('total', 0)}</b>"
+            f"🎯 יעדים ייחודיים: <b>{result.get('total', 0)}</b>\n\n"
+            f"📡 נשלח אל:\n{targets_line or '• ללא יעד'}\n\n"
+            f"🧩 גרסה: <code>{_MERCHANT_BUILD_TAG}</code>"
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -1423,7 +1513,11 @@ async def _get_required_channel_statuses(
                     status = "missing"
             except TelegramError as exc:
                 message = str(exc).lower()
-                if "user not participant" in message or "participant_id_invalid" in message:
+                if any(token in message for token in (
+                    "user not found",
+                    "participant_id_invalid",
+                    "chat not found",
+                )):
                     status = "missing"
                 else:
                     status = "unknown"
@@ -1672,6 +1766,10 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         sub_action = parts[3] if len(parts) > 3 else ""
+        if not sub_action:
+            has_saved_publications = bool(list_creator_publications(query.from_user.id, limit=1))
+            if not has_saved_publications:
+                _reset_merchant_publication_state(context, clear_selection=True)
         allowed_channel_records = list_merchant_allowed_channel_records(query.from_user.id)
         required_channel_records = list_merchant_required_channel_records(query.from_user.id)
         channels = [channel["display_name"] for channel in allowed_channel_records]
@@ -1761,6 +1859,37 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
                 await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
                 return
+            is_active_recurring = int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active"
+            if is_active_recurring:
+                wait_seconds = _manual_send_wait_seconds(query.from_user.id)
+                if wait_seconds > 0:
+                    await _send_manual_cooldown_message(bot, chat_id, wait_seconds)
+                    return
+                selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
+                selected_channels = [
+                    ch for ch in allowed_channel_records if str(ch.get("channel_key") or "") in selected_keys
+                ]
+                result = await run_publication_now(bot, pub_id)
+                targets_line = "\n".join(
+                    f"• {str(ch.get('display_name') or ch.get('channel_key') or '')}" for ch in selected_channels[:6]
+                )
+                if len(selected_channels) > 6:
+                    targets_line += f"\n• ועוד {len(selected_channels) - 6}"
+                await bot.send_message(
+                    chat_id,
+                    (
+                        "✅ <b>נשלחה שליחה מיידית נוספת</b>\n\n"
+                        f"📨 נשלחו: <b>{result.get('sent', 0)}</b>\n"
+                        f"❌ נכשלו: <b>{result.get('failed', 0)}</b>\n"
+                        f"🎯 יעדים ייחודיים: <b>{result.get('total', 0)}</b>\n\n"
+                        f"📡 נשלח אל:\n{targets_line or '• ללא יעד'}\n\n"
+                        "⏱️ הטיימר השעתי נשאר פעיל.\n"
+                        f"🧩 גרסה: <code>{_MERCHANT_BUILD_TAG}</code>"
+                    ),
+                    parse_mode="HTML",
+                )
+                await _show_merchant_publication_details(bot, chat_id, pub_id)
+                return
             selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
             _get_merchant_draft(context, selected_keys)
             draft = context.user_data[_MERCHANT_DRAFT_KEY]
@@ -1786,7 +1915,15 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
                 return
             await _cancel_merchant_publication_jobs(context, pub_id)
-            update_publication_record(pub_id, status="canceled", next_run_at=None)
+            update_publication_record(
+                pub_id,
+                status="canceled",
+                is_recurring=0,
+                repeat_every_minutes=None,
+                recurrence_type=None,
+                next_run_at=None,
+                scheduled_at=None,
+            )
             await bot.send_message(chat_id, "⛔ הפרסום השעתי נעצר.")
             await _show_merchant_publication_details(bot, chat_id, pub_id)
             return
@@ -1799,9 +1936,17 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             await _cancel_merchant_publication_jobs(context, pub_id)
             ok = remove_publication(pub_id)
-            if int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0) == pub_id:
-                context.user_data.pop(_MERCHANT_EDIT_PUB_ID_KEY, None)
-            await bot.send_message(chat_id, "✅ הפרסום נמחק." if ok else "❌ מחיקת פרסום נכשלה.")
+            if ok:
+                if int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0) == pub_id:
+                    _reset_merchant_publication_state(context, clear_selection=False)
+                remaining = list_creator_publications(query.from_user.id, limit=1)
+                if not remaining:
+                    _reset_merchant_publication_state(context, clear_selection=True)
+                    await bot.send_message(chat_id, "✅ הפרסום נמחק. לא נשארו פרסומים שמורים, והטיוטה אופסה.")
+                else:
+                    await bot.send_message(chat_id, "✅ הפרסום נמחק.")
+            else:
+                await bot.send_message(chat_id, "❌ מחיקת פרסום נכשלה.")
             await _show_merchant_publication_list(bot, chat_id, query.from_user.id)
             return
 
@@ -1988,7 +2133,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     "⏱️ <b>תזמון פרסום</b>\n\n"
                     f"הרשאת תזמון: <b>פעילה</b>\n"
                     f"מצב כל שעה: <b>{'פעיל' if is_hourly else 'כבוי'}</b>\n\n"
-                    "כדי להפעיל פרסום כל שעה, היכנס למסך יצירת הפרסום ולחץ 'הפעל אוטומטי כל שעה'."
+                    "כדי להפעיל פרסום כל שעה, היכנס למסך יצירת הפרסום ולחץ 'הפעל אוטומטי כל שעה'.\n"
+                    "כדי לעצור טיימר פעיל: הפרסומים שלי -> פתח פרסום -> עצור שעתי."
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
@@ -2066,6 +2212,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             (
                 "💼 <b>אזור סוחר</b>\n\n"
                 f"{prefix}"
+                f"🧩 גרסה: <code>{_MERCHANT_BUILD_TAG}</code>\n"
                 f"🆔 משתמש: <code>{query.from_user.id}</code>\n"
                 f"⏱️ פרסום שעתי בלבד: <b>{hourly_label}</b>\n"
                 f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"

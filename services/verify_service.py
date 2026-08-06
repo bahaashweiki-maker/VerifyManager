@@ -211,16 +211,22 @@ async def process_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-        warning = await update.message.reply_text(
-            "⚠️ הבוט פועל באמצעות הכפתורים בלבד."
-        )
+        warning = None
+        try:
+            warning = await update.message.reply_text(
+                "⚠️ הבוט פועל באמצעות הכפתורים בלבד."
+            )
+        except Exception:
+            # The original message may be deleted before reply is sent.
+            warning = None
 
         await asyncio.sleep(2)
 
-        try:
-            await context.bot.delete_message(chat_id, warning.message_id)
-        except:
-            pass
+        if warning is not None:
+            try:
+                await context.bot.delete_message(chat_id, warning.message_id)
+            except Exception:
+                pass
 
         return
     

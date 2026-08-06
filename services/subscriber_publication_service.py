@@ -8,7 +8,7 @@ from typing import Optional
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from database.database import get_connection, now_il
+from database.database import IL_TZ, get_connection, now_il
 from repositories.subscriber_publications_repository import (
         get_publication_delivery_by_id,
     create_publication_delivery,
@@ -138,6 +138,77 @@ def count_open_creator_publications(created_by: int) -> int:
             (created_by,),
         ).fetchone()
     return int(row[0] or 0) if row else 0
+
+
+def _ensure_creator_cooldown_table() -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creator_publication_cooldowns (
+                creator_id INTEGER PRIMARY KEY,
+                last_sent_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def get_creator_last_sent_at(created_by: int) -> str | None:
+    if created_by <= 0:
+        return None
+    _ensure_creator_cooldown_table()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT last_sent_at
+            FROM creator_publication_cooldowns
+            WHERE creator_id = ?
+            LIMIT 1
+            """,
+            (created_by,),
+        ).fetchone()
+        if row:
+            value = str(row[0] or "").strip()
+            if value:
+                return value
+
+        row = conn.execute(
+            """
+            SELECT last_sent_at
+            FROM subscriber_publications
+            WHERE created_by = ?
+              AND target_type = 'chat_list'
+              AND last_sent_at IS NOT NULL
+              AND TRIM(last_sent_at) <> ''
+            ORDER BY last_sent_at DESC, id DESC
+            LIMIT 1
+            """,
+            (created_by,),
+        ).fetchone()
+    if not row:
+        return None
+    value = str(row[0] or "").strip()
+    return value or None
+
+
+def set_creator_last_sent_at(created_by: int, sent_at: str | None = None) -> None:
+    if created_by <= 0:
+        return
+    stamp = (sent_at or now_il().replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")).strip()
+    if not stamp:
+        return
+    _ensure_creator_cooldown_table()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO creator_publication_cooldowns (creator_id, last_sent_at)
+            VALUES (?, ?)
+            ON CONFLICT(creator_id) DO UPDATE SET
+                last_sent_at = excluded.last_sent_at
+            """,
+            (created_by, stamp),
+        )
+        conn.commit()
 
 
 def list_publication_buttons(publication_id: int) -> list:
@@ -322,20 +393,29 @@ def _parse_chat_list_target(target_value: str | None) -> list[str | int]:
         candidates = [part.strip() for part in raw.split(",") if part.strip()]
 
     refs: list[str | int] = []
+    seen: set[str] = set()
+
+    def _add_ref(value: str | int) -> None:
+        key = str(value).strip()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        refs.append(value)
+
     for item in candidates:
         if isinstance(item, int):
-            refs.append(item)
+            _add_ref(item)
             continue
         text = str(item or "").strip()
         if not text:
             continue
         if text.startswith("-100"):
             try:
-                refs.append(int(text))
+                _add_ref(int(text))
                 continue
             except Exception:
                 pass
-        refs.append(text)
+        _add_ref(text)
     return refs
 
 
@@ -427,9 +507,10 @@ async def schedule_publication_once(
     for job in context.job_queue.jobs():
         if job.name == f"{job_prefix}_{publication_id}":
             job.schedule_removal()
+    run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
     context.job_queue.run_once(
         _scheduled_publication_job_callback,
-        when=run_at,
+        when=run_when,
         data={"publication_id": publication_id, "job_prefix": job_prefix},
         name=f"{job_prefix}_{publication_id}",
     )
@@ -447,9 +528,10 @@ async def schedule_publication_recurring(
     for job in context.job_queue.jobs():
         if job.name == f"{job_prefix}_{publication_id}":
             job.schedule_removal()
+    run_when = run_at.replace(tzinfo=IL_TZ) if run_at.tzinfo is None else run_at.astimezone(IL_TZ)
     context.job_queue.run_once(
         _scheduled_publication_job_callback,
-        when=run_at,
+        when=run_when,
         data={"publication_id": publication_id, "job_prefix": job_prefix},
         name=f"{job_prefix}_{publication_id}",
     )
@@ -762,6 +844,10 @@ async def dispatch_publication(bot: Bot, publication_id: int) -> dict:
             record_publication_stat(publication_id, subscriber_id, "failed")
 
     increment_publication_delivery(publication_id, sent, failed, len(recipients))
+
+    creator_id = int(pub.get("created_by") or 0)
+    if creator_id > 0 and sent > 0 and str(pub.get("target_type") or "") == "chat_list":
+        set_creator_last_sent_at(creator_id)
 
     is_recurring = int(pub.get("is_recurring") or 0) == 1
     if is_recurring:

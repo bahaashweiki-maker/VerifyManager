@@ -2156,7 +2156,7 @@ async def _show_publication_details(update: Update, context: ContextTypes.DEFAUL
         f"מחיקה אוטומטית: <b>{(str(auto_delete_minutes) + ' דקות') if auto_delete_minutes > 0 else 'כבוי'}</b>\n"
         f"מוצלח: <b>{p.get('sent_success_count') or 0}</b> | נכשל: <b>{p.get('sent_fail_count') or 0}</b>\n"
         f"ממתין: <b>{pending_targets}</b>\n"
-        f"יעד כולל: <b>{p.get('total_targets') or 0}</b>"
+        f"יעדים ייחודיים: <b>{p.get('total_targets') or 0}</b>"
     )
     rows = [[InlineKeyboardButton("✏️ עריכה מלאה", callback_data=f"SUBS_PUB_EDIT_{publication_id}")]]
     rows.append([InlineKeyboardButton("🚀 שלח עכשיו", callback_data=f"SUBS_PUB_RUN_{publication_id}")])
@@ -2546,10 +2546,18 @@ async def _process_publication_auto_delete(context: ContextTypes.DEFAULT_TYPE, p
         delete_at = delete_at_dt.strftime("%Y-%m-%d %H:%M:%S")
         update_publication_record(publication_id, auto_delete_at=delete_at)
     for item in deliveries:
+        raw_tg = item.get("telegram_id")
+        try:
+            telegram_id = int(raw_tg or 0)
+        except Exception:
+            # Auto-delete tracking persists only numeric chat ids.
+            continue
+        if telegram_id <= 0:
+            continue
         delivery_id = create_publication_delivery_record(
             publication_id=publication_id,
             subscriber_id=int(item.get("subscriber_id") or 0) or None,
-            telegram_id=int(item.get("telegram_id") or 0),
+            telegram_id=telegram_id,
             message_id=int(item.get("message_id") or 0),
             delete_at=delete_at,
         )
