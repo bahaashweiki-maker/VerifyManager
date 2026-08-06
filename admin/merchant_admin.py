@@ -173,9 +173,12 @@ async def _show_channel_details(update: Update, context: ContextTypes.DEFAULT_TY
             "📡 <b>פרטי ערוץ</b>\n\n"
             f"שם: <b>{channel['display_name']}</b>\n"
             f"מפתח: <code>{channel['channel_key']}</code>\n"
-            f"מזהה/קישור: <code>{channel['channel_ref']}</code>"
+            f"מזהה/קישור: <code>{channel['channel_ref']}</code>\n\n"
+            "ℹ️ סוג הערוץ (חובת הצטרפות / ערוץ פרסום) לא נקבע כאן.\n"
+            "הבחירה מתבצעת לכל סוחר בנפרד במסך ניהול סוחרים."
         ),
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 מעבר לניהול סוחרים", callback_data="MERCHANT_ADM_LIST")],
             [InlineKeyboardButton("🗑 הסר ערוץ", callback_data=f"MERCHANT_ADM_CHANNEL_DEL_{channel['id']}")],
             [InlineKeyboardButton("⬅️ חזרה לערוצים", callback_data="MERCHANT_ADM_CHANNELS")],
         ]),
