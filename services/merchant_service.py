@@ -57,6 +57,7 @@ MERCHANT_PREFIX = "merchant."
 
 MERCHANT_CAPABILITY_LABELS: dict[str, str] = {
     "user.publish.create": "📝 יצירת פרסום",
+    "user.publish.multi": "🧩 פרסום נוסף במקביל",
     "user.publish.edit": "✏️ עריכת פרסום",
     "user.publish.delete": "🗑 מחיקת פרסום",
     "user.publish.pin": "📌 הצמדת פרסום",

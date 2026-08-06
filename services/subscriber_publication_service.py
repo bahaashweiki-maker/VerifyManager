@@ -32,6 +32,11 @@ from repositories.subscriber_publications_repository import (
 )
 
 
+def _row_factory(cursor, row):
+    fields = [d[0] for d in cursor.description]
+    return dict(zip(fields, row))
+
+
 def list_publications(limit: int = 50) -> list:
     return get_all_publications(limit=limit)
 
@@ -97,6 +102,42 @@ def update_publication_record(publication_id: int, **fields) -> bool:
 
 def remove_publication(publication_id: int) -> bool:
     return delete_publication(publication_id)
+
+
+def list_creator_publications(created_by: int, limit: int = 20) -> list[dict]:
+    if created_by <= 0:
+        return []
+    with get_connection() as conn:
+        conn.row_factory = _row_factory
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM subscriber_publications
+            WHERE created_by = ?
+              AND target_type = 'chat_list'
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (created_by, max(1, int(limit))),
+        ).fetchall()
+    return rows
+
+
+def count_open_creator_publications(created_by: int) -> int:
+    if created_by <= 0:
+        return 0
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM subscriber_publications
+            WHERE created_by = ?
+              AND target_type = 'chat_list'
+              AND status IN ('draft', 'scheduled', 'active', 'sending')
+            """,
+            (created_by,),
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def list_publication_buttons(publication_id: int) -> list:

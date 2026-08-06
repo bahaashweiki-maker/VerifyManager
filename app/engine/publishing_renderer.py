@@ -58,9 +58,15 @@ from services.merchant_service import (
     list_merchant_required_channel_records,
 )
 from services.subscriber_publication_service import (
+    count_open_creator_publications,
     create_publication_record,
+    get_publication,
+    list_creator_publications,
+    remove_publication,
+    replace_publication_buttons_record,
     run_publication_now,
     schedule_publication_recurring,
+    update_publication_record,
 )
 from repositories.merchant_publication_repository import merchant_has_hourly_publish
 from repositories.merchant_channels_repository import (
@@ -114,6 +120,7 @@ _MERCHANT_DRAFT_KEY = "merchant_publication_draft"
 _MERCHANT_STATE_KEY = "merchant_publication_state"
 _MERCHANT_REVIEW_TARGET_KEY = "merchant_review_target"
 _MERCHANT_CONTACT_TARGET_KEY = "merchant_contact_target"
+_MERCHANT_EDIT_PUB_ID_KEY = "merchant_edit_publication_id"
 
 _AWAIT_MERCHANT_TEXT = "merchant_await_text"
 _AWAIT_MERCHANT_MEDIA = "merchant_await_media"
@@ -208,6 +215,119 @@ def _draft_media_summary(draft: dict) -> str:
     return labels.get(media_type, media_type)
 
 
+def _publication_status_label(status: str) -> str:
+    mapping = {
+        "draft": "טיוטה",
+        "sending": "שולח",
+        "sent": "נשלח",
+        "scheduled": "מתוזמן",
+        "active": "פעיל",
+        "canceled": "בוטל",
+    }
+    return mapping.get((status or "").strip(), status or "לא ידוע")
+
+
+def _parse_chat_refs_from_target_value(target_value: str | None) -> list[str]:
+    raw = (target_value or "").strip()
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+        if isinstance(decoded, list):
+            return [str(x).strip() for x in decoded if str(x).strip()]
+    except Exception:
+        pass
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _detect_selected_keys_from_publication(pub: dict, allowed_channel_records: list[dict]) -> set[str]:
+    refs = set(_parse_chat_refs_from_target_value(pub.get("target_value")))
+    selected: set[str] = set()
+    for ch in allowed_channel_records:
+        key = str(ch.get("channel_key") or "")
+        if not key:
+            continue
+        membership_ref = get_channel_membership_chat_ref(ch)
+        if membership_ref and (membership_ref in refs or str(membership_ref) in refs):
+            selected.add(key)
+            continue
+        if membership_ref and membership_ref.startswith("-100") and membership_ref.lstrip("+") in refs:
+            selected.add(key)
+            continue
+    return selected
+
+
+async def _cancel_merchant_publication_jobs(context: ContextTypes.DEFAULT_TYPE, publication_id: int) -> None:
+    if not context.job_queue:
+        return
+    for job in context.job_queue.jobs():
+        if job.name in {f"merchant_repeat_{publication_id}", f"merchant_once_{publication_id}"}:
+            job.schedule_removal()
+
+
+async def _show_merchant_publication_list(
+    bot: Bot,
+    chat_id: int,
+    merchant_id: int,
+) -> None:
+    rows_data = list_creator_publications(merchant_id, limit=12)
+    rows: list[list[InlineKeyboardButton]] = []
+    lines = ["🗂️ <b>הפרסומים שלי</b>", ""]
+    if not rows_data:
+        lines.append("אין עדיין פרסומים שמורים.")
+    else:
+        for pub in rows_data:
+            pid = int(pub.get("id") or 0)
+            status = _publication_status_label(str(pub.get("status") or ""))
+            title = (str(pub.get("title") or "").strip() or f"פרסום #{pid}")[:26]
+            lines.append(f"• {title} — {status}")
+            rows.append([InlineKeyboardButton(f"📄 {title} ({status})", callback_data=f"pub:user:merchant:pubview:{pid}")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
+    await bot.send_message(
+        chat_id,
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def _show_merchant_publication_details(
+    bot: Bot,
+    chat_id: int,
+    publication_id: int,
+) -> None:
+    pub = get_publication(publication_id)
+    if not pub:
+        await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+        return
+    status = _publication_status_label(str(pub.get("status") or ""))
+    title = str(pub.get("title") or "").strip() or f"פרסום #{publication_id}"
+    next_run_at = str(pub.get("next_run_at") or "").strip() or "-"
+    content_preview = (str(pub.get("content_text") or "").strip() or "ללא טקסט")[:220]
+
+    rows = [
+        [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"pub:user:merchant:pubpreview:{publication_id}")],
+        [InlineKeyboardButton("✏️ ערוך ושמור", callback_data=f"pub:user:merchant:pubedit:{publication_id}")],
+        [InlineKeyboardButton("🚀 פרסם עכשיו", callback_data=f"pub:user:merchant:pubrun:{publication_id}")],
+    ]
+    if int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active":
+        rows.append([InlineKeyboardButton("⛔ עצור שעתי", callback_data=f"pub:user:merchant:pubstop:{publication_id}")])
+    rows.append([InlineKeyboardButton("🗑️ מחק פרסום", callback_data=f"pub:user:merchant:pubdel:{publication_id}")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data="pub:user:merchant:mypubs")])
+
+    await bot.send_message(
+        chat_id,
+        (
+            f"📄 <b>{title}</b>\n\n"
+            f"סטטוס: <b>{status}</b>\n"
+            f"🕒 הפעלה הבאה: <b>{next_run_at}</b>\n\n"
+            f"{content_preview}"
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
 async def _send_merchant_compose_screen(
     bot: Bot,
     chat_id: int,
@@ -225,6 +345,8 @@ async def _send_merchant_compose_screen(
     ]
     content_preview = (str(draft.get("content_text") or "").strip() or "ללא טקסט")[:350]
     media_summary = _draft_media_summary(draft)
+    edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
+    mode_line = f"✏️ מצב עריכה לפרסום #{edit_pub_id}" if edit_pub_id > 0 else "🆕 פרסום חדש"
 
     rows = [
         [InlineKeyboardButton("📡 בחר ערוצים", callback_data="pub:user:merchant:start")],
@@ -236,12 +358,14 @@ async def _send_merchant_compose_screen(
     rows.append([InlineKeyboardButton("🚀 פרסם עכשיו", callback_data="pub:user:merchant:sendnow")])
     if capability_flags.get("user.publish.schedule") and merchant_has_hourly_publish(merchant_id):
         rows.append([InlineKeyboardButton("⏱️ הפעל אוטומטי כל שעה", callback_data="pub:user:merchant:sendhourly")])
+    rows.append([InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
 
     await bot.send_message(
         chat_id,
         (
             "🧾 <b>יצירת פרסום לסוחר</b>\n\n"
+            f"{mode_line}\n"
             f"📡 ערוצים נבחרים: <b>{len(selected_names)}</b>\n"
             + ("\n".join(f"• {name}" for name in selected_names[:8]) if selected_names else "אין ערוצים נבחרים")
             + "\n\n"
@@ -264,7 +388,13 @@ async def _send_merchant_publication_preview(
     file_id = str(draft.get("file_id") or "").strip()
     media_type = str(draft.get("media_type") or "").strip() or None
     bot_username = await _get_bot_username(bot, context)
-    keyboard = _build_markup_from_button_defs(_build_merchant_publication_button_defs(bot_username, merchant_id))
+    preview_rows = _build_merchant_publication_button_defs(bot_username, merchant_id)
+    keyboard = _build_markup_from_button_defs(preview_rows)
+    back_row = [InlineKeyboardButton("⬅️ חזרה לעמוד פרסום", callback_data="pub:user:merchant:compose")]
+    if keyboard:
+        keyboard = InlineKeyboardMarkup(list(keyboard.inline_keyboard) + [back_row])
+    else:
+        keyboard = InlineKeyboardMarkup([back_row])
 
     if not content and not file_id:
         await bot.send_message(chat_id, "⚠️ אין עדיין תוכן לתצוגה מקדימה.")
@@ -277,7 +407,7 @@ async def _send_merchant_publication_preview(
             file_id,
             media_type=media_type,
             caption=content or "(ללא טקסט)",
-            keyboard=keyboard or InlineKeyboardMarkup([]),
+            keyboard=keyboard,
         )
         return
 
@@ -313,6 +443,7 @@ async def _run_merchant_publication_send(
     context: ContextTypes.DEFAULT_TYPE,
     merchant_id: int,
     allowed_channel_records: list[dict],
+    capability_flags: dict[str, bool],
     *,
     recurring_hourly: bool,
 ) -> None:
@@ -345,28 +476,65 @@ async def _run_merchant_publication_send(
     buttons = _build_merchant_publication_button_defs(bot_username, merchant_id)
     target_value = json.dumps(refs, ensure_ascii=False)
     title = f"Merchant publication {merchant_id}"
+    edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
+
+    if edit_pub_id <= 0 and not capability_flags.get("user.publish.multi"):
+        open_count = count_open_creator_publications(merchant_id)
+        if open_count >= 1:
+            await bot.send_message(
+                chat_id,
+                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
 
     if recurring_hourly:
         next_run_dt = _next_full_hour(now_il().replace(tzinfo=None))
-        pub_id = create_publication_record(
-            title=title,
-            content_text=content_text,
-            media_type=media_type,
-            file_id=file_id,
-            target_type="chat_list",
-            target_value=target_value,
-            status="active",
-            created_by=merchant_id,
-            is_recurring=1,
-            repeat_every_minutes=60,
-            recurrence_type="interval",
-            next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            buttons=buttons,
-        )
+        if edit_pub_id > 0:
+            ok = update_publication_record(
+                edit_pub_id,
+                title=title,
+                content_text=content_text,
+                media_type=media_type,
+                file_id=file_id,
+                target_type="chat_list",
+                target_value=target_value,
+                status="active",
+                is_recurring=1,
+                repeat_every_minutes=60,
+                recurrence_type="interval",
+                next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                scheduled_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            if not ok:
+                await bot.send_message(chat_id, "❌ שגיאה בעדכון פרסום שעתי.")
+                return
+            replace_publication_buttons_record(edit_pub_id, buttons)
+            pub_id = edit_pub_id
+        else:
+            pub_id = create_publication_record(
+                title=title,
+                content_text=content_text,
+                media_type=media_type,
+                file_id=file_id,
+                target_type="chat_list",
+                target_value=target_value,
+                status="active",
+                created_by=merchant_id,
+                is_recurring=1,
+                repeat_every_minutes=60,
+                recurrence_type="interval",
+                next_run_at=next_run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                buttons=buttons,
+            )
         if pub_id <= 0:
             await bot.send_message(chat_id, "❌ שגיאה בשמירת פרסום שעתי.")
             return
         await schedule_publication_recurring(context, pub_id, next_run_dt, job_prefix="merchant_repeat")
+        context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
         await bot.send_message(
             chat_id,
             (
@@ -381,22 +549,45 @@ async def _run_merchant_publication_send(
         )
         return
 
-    pub_id = create_publication_record(
-        title=title,
-        content_text=content_text,
-        media_type=media_type,
-        file_id=file_id,
-        target_type="chat_list",
-        target_value=target_value,
-        status="sending",
-        created_by=merchant_id,
-        buttons=buttons,
-    )
+    if edit_pub_id > 0:
+        ok = update_publication_record(
+            edit_pub_id,
+            title=title,
+            content_text=content_text,
+            media_type=media_type,
+            file_id=file_id,
+            target_type="chat_list",
+            target_value=target_value,
+            status="sending",
+            is_recurring=0,
+            repeat_every_minutes=None,
+            recurrence_type=None,
+            next_run_at=None,
+            scheduled_at=None,
+        )
+        if not ok:
+            await bot.send_message(chat_id, "❌ שגיאה בעדכון פרסום.")
+            return
+        replace_publication_buttons_record(edit_pub_id, buttons)
+        pub_id = edit_pub_id
+    else:
+        pub_id = create_publication_record(
+            title=title,
+            content_text=content_text,
+            media_type=media_type,
+            file_id=file_id,
+            target_type="chat_list",
+            target_value=target_value,
+            status="sending",
+            created_by=merchant_id,
+            buttons=buttons,
+        )
     if pub_id <= 0:
         await bot.send_message(chat_id, "❌ שגיאה ביצירת פרסום.")
         return
 
     result = await run_publication_now(bot, pub_id)
+    context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
     await bot.send_message(
         chat_id,
         (
@@ -1501,6 +1692,119 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        if sub_action == "compose":
+            await _send_merchant_compose_screen(
+                bot,
+                chat_id,
+                context,
+                query.from_user.id,
+                allowed_channel_records,
+                capability_flags,
+            )
+            return
+
+        if sub_action == "mypubs":
+            await _show_merchant_publication_list(bot, chat_id, query.from_user.id)
+            return
+
+        if sub_action == "pubview" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            await _show_merchant_publication_details(bot, chat_id, pub_id)
+            return
+
+        if sub_action == "pubpreview" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
+            _get_merchant_draft(context, selected_keys)
+            draft = context.user_data[_MERCHANT_DRAFT_KEY]
+            draft["content_text"] = str(pub.get("content_text") or "")
+            draft["media_type"] = str(pub.get("media_type") or "") or None
+            draft["file_id"] = str(pub.get("file_id") or "") or None
+            context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
+            await _send_merchant_publication_preview(bot, chat_id, context, query.from_user.id)
+            return
+
+        if sub_action == "pubedit" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
+            _get_merchant_draft(context, selected_keys)
+            draft = context.user_data[_MERCHANT_DRAFT_KEY]
+            draft["content_text"] = str(pub.get("content_text") or "")
+            draft["media_type"] = str(pub.get("media_type") or "") or None
+            draft["file_id"] = str(pub.get("file_id") or "") or None
+            context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
+            await _send_merchant_compose_screen(
+                bot,
+                chat_id,
+                context,
+                query.from_user.id,
+                allowed_channel_records,
+                capability_flags,
+            )
+            return
+
+        if sub_action == "pubrun" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
+            _get_merchant_draft(context, selected_keys)
+            draft = context.user_data[_MERCHANT_DRAFT_KEY]
+            draft["content_text"] = str(pub.get("content_text") or "")
+            draft["media_type"] = str(pub.get("media_type") or "") or None
+            draft["file_id"] = str(pub.get("file_id") or "") or None
+            context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
+            await _run_merchant_publication_send(
+                bot,
+                chat_id,
+                context,
+                query.from_user.id,
+                allowed_channel_records,
+                capability_flags,
+                recurring_hourly=False,
+            )
+            return
+
+        if sub_action == "pubstop" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            await _cancel_merchant_publication_jobs(context, pub_id)
+            update_publication_record(pub_id, status="canceled", next_run_at=None)
+            await bot.send_message(chat_id, "⛔ הפרסום השעתי נעצר.")
+            await _show_merchant_publication_details(bot, chat_id, pub_id)
+            return
+
+        if sub_action == "pubdel" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            await _cancel_merchant_publication_jobs(context, pub_id)
+            ok = remove_publication(pub_id)
+            if int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0) == pub_id:
+                context.user_data.pop(_MERCHANT_EDIT_PUB_ID_KEY, None)
+            await bot.send_message(chat_id, "✅ הפרסום נמחק." if ok else "❌ מחיקת פרסום נכשלה.")
+            await _show_merchant_publication_list(bot, chat_id, query.from_user.id)
+            return
+
         if sub_action == "channels":
             lines = "\n".join(f"• {c}" for c in channels) if channels else "אין עדיין ערוצים מורשים."
             await bot.send_message(
@@ -1642,6 +1946,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 context,
                 query.from_user.id,
                 allowed_channel_records,
+                capability_flags,
                 recurring_hourly=False,
             )
             return
@@ -1659,6 +1964,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 context,
                 query.from_user.id,
                 allowed_channel_records,
+                capability_flags,
                 recurring_hourly=True,
             )
             return
@@ -1686,7 +1992,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🧾 יצירת פרסום", callback_data="pub:user:merchant:startconfirm")],
+                    [InlineKeyboardButton("🧾 יצירת פרסום", callback_data="pub:user:merchant:compose")],
+                    [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
                     [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
                 ]),
             )
@@ -1734,6 +2041,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         menu_rows.extend([
             [InlineKeyboardButton("🔐 חובת הצטרפות", callback_data="pub:user:merchant:required")],
             [InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")],
+            [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
             [InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")],
             [InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")],
         ])
