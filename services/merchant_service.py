@@ -56,14 +56,18 @@ logger = logging.getLogger(__name__)
 MERCHANT_PREFIX = "merchant."
 
 MERCHANT_CAPABILITY_LABELS: dict[str, str] = {
-    "user.publish.create": "📝 יצירת פרסום",
+    "user.merchant.start": "▶️ אזור סוחר: התחל פרסום",
+    "user.merchant.schedule": "⏱️ אזור סוחר: תזמון פרסום",
+    "user.merchant.required": "🔐 אזור סוחר: חובת הצטרפות",
+    "user.merchant.channels": "📡 אזור סוחר: הערוצים שלי",
+    "user.merchant.publications": "🗂️ אזור סוחר: הפרסומים שלי",
+    "user.merchant.status": "🛡️ אזור סוחר: סטטוס הרשאות",
     "user.publish.multi": "🧩 פרסום נוסף במקביל",
-    "user.publish.edit": "✏️ עריכת פרסום",
-    "user.publish.delete": "🗑 מחיקת פרסום",
-    "user.publish.pin": "📌 הצמדת פרסום",
-    "user.publish.schedule": "🕐 תזמון פרסום",
     "user.media.image": "🖼 העלאת תמונה",
     "user.media.video": "🎥 העלאת וידאו",
+    "user.media.animation": "🌀 העלאת אנימציה",
+    "user.media.document": "📄 העלאת מסמך",
+    "user.media.audio": "🎵 העלאת אודיו",
     "user.review.write": "⭐ הגשת חוות דעת",
     "user.review.reply": "💬 מענה לחוות דעת",
     "user.store.view": "🛍 צפייה בחנות",
@@ -211,9 +215,7 @@ def get_merchant_capability_flags(telegram_id: int) -> dict[str, bool]:
 
 def can_merchant_start_publication(telegram_id: int) -> bool:
     flags = get_merchant_capability_flags(telegram_id)
-    return bool(flags.get("user.publish.create")) and bool(
-        flags.get("user.media.image") or flags.get("user.media.video")
-    )
+    return bool(flags.get("user.merchant.start"))
 
 
 def list_merchant_allowed_channel_records(telegram_id: int) -> list[dict]:

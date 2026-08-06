@@ -22,18 +22,21 @@ from __future__ import annotations
 
 USER_PERMISSIONS: list[dict[str, str]] = [
 
-    # ─── פרסום ───────────────────────────────────────────────────────────────
-    {"key": "user.publish.create",      "label": "📝 יצירת פרסום"},
-    {"key": "user.publish.edit",        "label": "✏️ עריכת פרסום"},
-    {"key": "user.publish.delete",      "label": "🗑 מחיקת פרסום"},
-    {"key": "user.publish.pin",         "label": "📌 הצמדת פרסום"},
-    {"key": "user.publish.schedule",    "label": "🕐 תזמון פרסום"},
+    # ─── אזור סוחר (כפתורים בפאנל) ─────────────────────────────────────────
+    {"key": "user.merchant.start",      "label": "▶️ כפתור: התחל פרסום"},
+    {"key": "user.merchant.schedule",   "label": "⏱️ כפתור: תזמון פרסום"},
+    {"key": "user.merchant.required",   "label": "🔐 כפתור: חובת הצטרפות"},
+    {"key": "user.merchant.channels",   "label": "📡 כפתור: הערוצים שלי"},
+    {"key": "user.merchant.publications","label": "🗂️ כפתור: הפרסומים שלי"},
+    {"key": "user.merchant.status",     "label": "🛡️ כפתור: סטטוס הרשאות"},
+    {"key": "user.publish.multi",       "label": "🧩 פרסומים מרובים במקביל"},
 
     # ─── מדיה ────────────────────────────────────────────────────────────────
     {"key": "user.media.image",         "label": "🖼 העלאת תמונות"},
     {"key": "user.media.video",         "label": "🎥 העלאת וידאו"},
+    {"key": "user.media.animation",     "label": "🌀 העלאת אנימציה"},
+    {"key": "user.media.document",      "label": "📄 העלאת מסמך"},
     {"key": "user.media.audio",         "label": "🎵 העלאת אודיו"},
-    {"key": "user.media.file",          "label": "📄 העלאת קבצים"},
 
     # ─── תקשורת ──────────────────────────────────────────────────────────────
     {"key": "user.msg.send",            "label": "💬 שליחת הודעות"},
