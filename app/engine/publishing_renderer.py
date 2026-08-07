@@ -123,6 +123,7 @@ _MERCHANT_REVIEW_TARGET_KEY = "merchant_review_target"
 _MERCHANT_CONTACT_TARGET_KEY = "merchant_contact_target"
 _MERCHANT_EDIT_PUB_ID_KEY = "merchant_edit_publication_id"
 _MERCHANT_CHANNEL_PICKER_SOURCE_KEY = "merchant_channel_picker_source"
+_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY = "merchant_required_join_last_state"
 
 _AWAIT_MERCHANT_TEXT = "merchant_await_text"
 _AWAIT_MERCHANT_MEDIA = "merchant_await_media"
@@ -509,6 +510,8 @@ async def _send_merchant_compose_screen(
     ]
     content_preview = (str(draft.get("content_text") or "").strip() or "ללא טקסט")[:350]
     media_summary = _draft_media_summary(draft)
+    has_saved_content = bool(str(draft.get("content_text") or "").strip() or str(draft.get("file_id") or "").strip())
+    save_line = "💾 נשמר אוטומטית כטיוטה לפני שליחה.\n" if has_saved_content else "💾 טיוטה תישמר אוטומטית אחרי טקסט או מדיה ראשונים.\n"
     edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
     mode_line = f"✏️ מצב עריכה לפרסום #{edit_pub_id}" if edit_pub_id > 0 else "🆕 פרסום חדש"
     hourly_only = merchant_has_hourly_publish(merchant_id)
@@ -530,7 +533,7 @@ async def _send_merchant_compose_screen(
         (
             "🧾 <b>יצירת פרסום</b>\n\n"
             + f"{mode_line}\n"
-            + "💾 נשמר אוטומטית כטיוטה עוד לפני שליחה.\n"
+            + save_line
             + ("⏱️ החשבון מוגדר לשליחה ידנית פעם בשעה + אוטומטית כל שעה.\n" if hourly_only else "")
             + f"📡 ערוצים נבחרים: <b>{len(selected_names)}</b>\n"
             + ("\n".join(f"• {name}" for name in selected_names[:8]) if selected_names else "אין ערוצים נבחרים")
@@ -646,6 +649,9 @@ def _ensure_merchant_draft_record(
                 return 0, "error"
         return edit_pub_id, "ok"
 
+    if not content_text and not file_id:
+        return 0, "no_content"
+
     if not capability_flags.get("user.publish.multi"):
         open_count = count_open_creator_publications(merchant_id)
         if open_count >= 1:
@@ -665,6 +671,29 @@ def _ensure_merchant_draft_record(
         return 0, "error"
     context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = new_pub_id
     return new_pub_id, "ok"
+
+
+async def _notify_admin_required_join_completed(
+    bot: Bot,
+    merchant_id: int,
+    merchant_name: str,
+    required_count: int,
+) -> None:
+    if ADMIN_ID <= 0:
+        return
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            (
+                "✅ <b>אימות חובת הצטרפות הושלם</b>\n\n"
+                f"👤 סוחר: <b>{merchant_name}</b>\n"
+                f"🆔 משתמש: <code>{merchant_id}</code>\n"
+                f"🔐 ערוצי חובה מאומתים: <b>{required_count}</b>"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 async def _run_merchant_publication_send(
@@ -947,20 +976,31 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
             return True
         draft = _get_merchant_draft(context)
         draft["content_text"] = content
-        _ensure_merchant_draft_record(
+        allowed_channels = list_merchant_allowed_channel_records(update.effective_user.id)
+        capability_flags = get_merchant_capability_flags(update.effective_user.id)
+        _, draft_state = _ensure_merchant_draft_record(
             context,
             update.effective_user.id,
-            list_merchant_allowed_channel_records(update.effective_user.id),
-            get_merchant_capability_flags(update.effective_user.id),
+            allowed_channels,
+            capability_flags,
         )
+        if draft_state == "blocked":
+            context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            await update.message.reply_text(
+                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi"
+            )
+            return True
+        if draft_state == "error":
+            await update.message.reply_text("❌ שגיאה בשמירת הטיוטה.")
+            return True
         context.user_data.pop(_MERCHANT_STATE_KEY, None)
         await _send_merchant_compose_screen(
             context.bot,
             update.effective_chat.id,
             context,
             update.effective_user.id,
-            list_merchant_allowed_channel_records(update.effective_user.id),
-            get_merchant_capability_flags(update.effective_user.id),
+            allowed_channels,
+            capability_flags,
         )
         return True
 
@@ -1001,19 +1041,29 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
         draft = _get_merchant_draft(context)
         draft["media_type"] = media_type
         draft["file_id"] = file_id
-        _ensure_merchant_draft_record(
+        allowed_channels = list_merchant_allowed_channel_records(update.effective_user.id)
+        _, draft_state = _ensure_merchant_draft_record(
             context,
             update.effective_user.id,
-            list_merchant_allowed_channel_records(update.effective_user.id),
-            get_merchant_capability_flags(update.effective_user.id),
+            allowed_channels,
+            capability_flags,
         )
+        if draft_state == "blocked":
+            context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            await update.message.reply_text(
+                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi"
+            )
+            return True
+        if draft_state == "error":
+            await update.message.reply_text("❌ שגיאה בשמירת הטיוטה.")
+            return True
         context.user_data.pop(_MERCHANT_STATE_KEY, None)
         await _send_merchant_compose_screen(
             context.bot,
             update.effective_chat.id,
             context,
             update.effective_user.id,
-            list_merchant_allowed_channel_records(update.effective_user.id),
+            allowed_channels,
             get_merchant_capability_flags(update.effective_user.id),
         )
         return True
@@ -1760,14 +1810,14 @@ async def _send_required_channels_gate(bot: Bot, chat_id: int, items: list[dict]
     if has_unknown:
         extra_note = (
             "\n\nℹ️ בחלק מהערוצים הפרטיים אין אימות אוטומטי מלא. "
-            "הצטרף אליהם ואז אפשר להמשיך לפרסום."
+            "כדי לאמת אותם בזמן אמת צריך להגדיר לערוץ גם מזהה בדיקה: -100... או @username."
         )
 
     await bot.send_message(
         chat_id,
         (
             "🔐 <b>לפני פרסום צריך להשלים הצטרפות</b>\n\n"
-            "הצטרף לערוצים הבאים ואז חזור לבדיקה מחדש.\n\n"
+            "צריך להצטרף לכל הערוצים שמסומנים ב-❌ ואז לחזור לבדיקה מחדש.\n\n"
             + "\n".join(lines)
             + extra_note
         ),
@@ -1817,9 +1867,13 @@ async def _send_required_channels_status(
 
     if only_unknown:
         header += (
-            "הצטרף לערוצים הפרטיים הבאים.\n"
-            "לאחר ההצטרפות אפשר להמשיך לפרסום.\n\n"
+            "אלו ערוצים פרטיים שלא ניתן לאמת אוטומטית בהגדרה הנוכחית.\n"
+            "כדי אימות מלא בזמן אמת יש להגדיר להם מזהה בדיקה: -100... או @username.\n\n"
         )
+
+    has_missing = any(item["status"] == "missing" for item in statuses)
+    if not has_missing and not all_joined:
+        header += "ℹ️ כרגע אין חסימת הצטרפות פעילה, אבל יש ערוצים שלא אומתו אוטומטית.\n\n"
 
     rows = _build_required_join_buttons(statuses)
     rows.append([InlineKeyboardButton("🔄 בדוק שוב", callback_data="pub:user:merchant:required")])
@@ -2037,6 +2091,34 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         unknown_required = [item for item in required_statuses if item["status"] == "unknown"]
         not_joined_required = [item for item in required_statuses if item["status"] != "joined"]
 
+        required_gate_actions = {
+            "compose", "start", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly",
+            "schedule", "mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubstop", "pubdel",
+        }
+        if sub_action in required_gate_actions and missing_required:
+            await _send_required_channels_gate(bot, chat_id, required_statuses)
+            context.user_data[_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY] = False
+            return
+
+        all_required_joined = len(missing_required) == 0
+        if required_channel_records:
+            prev_join_state = context.user_data.get(_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY)
+            context.user_data[_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY] = all_required_joined
+            if prev_join_state is False and all_required_joined:
+                merchant_name = str(query.from_user.full_name or query.from_user.username or query.from_user.id)
+                await bot.send_message(
+                    chat_id,
+                    "✅ לא נשארו חסימות הצטרפות. אפשר להמשיך לפרסום.",
+                )
+                await _notify_admin_required_join_completed(
+                    bot,
+                    query.from_user.id,
+                    merchant_name,
+                    len(required_channel_records),
+                )
+        else:
+            context.user_data.pop(_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY, None)
+
         if sub_action in {"compose", "start", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly"}:
             if not _merchant_feature_allowed(capability_flags, "user.merchant.start"):
                 await bot.send_message(chat_id, "⛔ אין לך הרשאה: התחל פרסום.")
@@ -2068,7 +2150,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 bot,
                 chat_id,
                 required_statuses,
-                all_joined=(len(not_joined_required) == 0),
+                all_joined=(len(missing_required) == 0),
             )
             return
 
@@ -2274,7 +2356,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if sub_action == "start":
             if missing_required:
-                await _send_required_channels_gate(bot, chat_id, missing_required)
+                await _send_required_channels_gate(bot, chat_id, required_statuses)
                 return
             if not can_start_publication:
                 await bot.send_message(
@@ -2307,7 +2389,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if sub_action == "pickch" and len(parts) > 4:
             if missing_required:
-                await _send_required_channels_gate(bot, chat_id, missing_required)
+                await _send_required_channels_gate(bot, chat_id, required_statuses)
                 return
             channel_key = str(parts[4] or "")
             allowed_keys = {str(ch.get("channel_key") or "") for ch in allowed_channel_records}
@@ -2337,9 +2419,6 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if sub_action == "startconfirm":
-            if missing_required:
-                await _send_required_channels_gate(bot, chat_id, missing_required)
-                return
             selected = _get_selected_merchant_channels(context, allowed_channel_records)
             if not selected:
                 await bot.send_message(
@@ -2351,26 +2430,6 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
             _get_merchant_draft(context, selected)
-            edit_pub_id_before = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
-            draft_pub_id, draft_state = _ensure_merchant_draft_record(
-                context,
-                query.from_user.id,
-                allowed_channel_records,
-                capability_flags,
-            )
-            if draft_state == "blocked":
-                await bot.send_message(
-                    chat_id,
-                    "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
-                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
-                    ]),
-                )
-                return
-            if draft_state == "error":
-                await bot.send_message(chat_id, "❌ שגיאה בשמירת טיוטה.")
-                return
             await _send_merchant_compose_screen(
                 bot,
                 chat_id,
@@ -2379,11 +2438,6 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 allowed_channel_records,
                 capability_flags,
             )
-            if edit_pub_id_before <= 0 and draft_pub_id > 0:
-                await bot.send_message(
-                    chat_id,
-                    f"✅ הטיוטה נשמרה ונוספה ל'הפרסומים שלי' (#{draft_pub_id}).",
-                )
             return
 
         if sub_action == "settext":
@@ -2432,7 +2486,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if sub_action == "schedule":
             if missing_required:
-                await _send_required_channels_gate(bot, chat_id, missing_required)
+                await _send_required_channels_gate(bot, chat_id, required_statuses)
                 return
             if not capability_flags.get("user.merchant.schedule"):
                 await bot.send_message(
@@ -2525,6 +2579,11 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 [InlineKeyboardButton("🔄 בדוק שוב", callback_data="pub:user:merchant")],
                 [InlineKeyboardButton("🔁 הפעל מחדש", callback_data="RESTART_BOT_PENDING")],
             ] + menu_rows
+        elif unknown_required:
+            prefix = (
+                "ℹ️ <b>יש ערוצי חובה פרטיים שלא אומתו אוטומטית.</b>\n"
+                "זה לא חוסם כרגע פרסום, אבל כדי אימות מלא בזמן אמת צריך להגדיר לערוצים מזהה בדיקה: -100... או @username.\n\n"
+            )
         elif not channels:
             prefix = (
                 "📡 <b>אין לך עדיין ערוצי פרסום מורשים.</b>\n"
