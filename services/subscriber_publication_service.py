@@ -133,7 +133,7 @@ def count_open_creator_publications(created_by: int) -> int:
             FROM subscriber_publications
             WHERE created_by = ?
               AND target_type = 'chat_list'
-              AND status IN ('draft', 'scheduled', 'active', 'sending')
+                            AND status IN ('draft', 'scheduled', 'active', 'sending', 'sent')
             """,
             (created_by,),
         ).fetchone()

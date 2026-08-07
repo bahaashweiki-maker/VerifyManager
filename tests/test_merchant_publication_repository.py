@@ -74,6 +74,32 @@ def test_grant_and_revoke_required_channel() -> None:
     conn.close()
 
 
+def test_grant_and_revoke_multi_channel_access() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        assert repo.grant_merchant_multi_channel_access(telegram_id=555, channel_key="@DealsPlus", granted_by=1) is True
+        assert repo.list_merchant_multi_allowed_channels(555) == ["dealsplus"]
+
+        assert repo.revoke_merchant_multi_channel_access(telegram_id=555, channel_key="dealsplus") is True
+        assert repo.list_merchant_multi_allowed_channels(555) == []
+    conn.close()
+
+
+def test_publication_limit_default_and_override() -> None:
+    conn, fake_get_connection = _shared_memory_get_connection()
+    with patch.object(repo, "get_connection", fake_get_connection):
+        # No multi => hard limit 1
+        assert repo.get_merchant_publication_limit(666, multi_enabled=False) == 1
+
+        # Multi enabled without explicit limit => default
+        assert repo.get_merchant_publication_limit(666, multi_enabled=True) == repo.DEFAULT_MULTI_PUBLICATION_LIMIT
+
+        # Explicit admin-set limit overrides default
+        assert repo.set_merchant_publication_limit(666, 5, granted_by=1) is True
+        assert repo.get_merchant_publication_limit(666, multi_enabled=True) == 5
+    conn.close()
+
+
 def test_set_and_unset_hourly_publish_permission() -> None:
     conn, fake_get_connection = _shared_memory_get_connection()
     with patch.object(repo, "get_connection", fake_get_connection):

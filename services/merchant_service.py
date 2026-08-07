@@ -45,6 +45,7 @@ from database.database import get_connection
 from repositories.merchant_channels_repository import list_channels_by_keys
 from repositories.merchant_publication_repository import (
     list_merchant_allowed_channels,
+    list_merchant_multi_allowed_channels,
     list_merchant_required_channels,
 )
 from services.permission_service import has_permission, get_user_permissions
@@ -224,3 +225,7 @@ def list_merchant_allowed_channel_records(telegram_id: int) -> list[dict]:
 
 def list_merchant_required_channel_records(telegram_id: int) -> list[dict]:
     return list_channels_by_keys(list_merchant_required_channels(telegram_id))
+
+
+def list_merchant_multi_allowed_channel_records(telegram_id: int) -> list[dict]:
+    return list_channels_by_keys(list_merchant_multi_allowed_channels(telegram_id))

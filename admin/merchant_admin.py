@@ -32,13 +32,19 @@ from repositories.merchant_channels_repository import (
     list_channels,
 )
 from repositories.merchant_publication_repository import (
+    DEFAULT_MULTI_PUBLICATION_LIMIT,
     grant_merchant_channel_access,
+    grant_merchant_multi_channel_access,
     grant_merchant_required_channel,
+    get_merchant_publication_limit,
     list_merchant_allowed_channels,
+    list_merchant_multi_allowed_channels,
     list_merchant_required_channels,
     merchant_has_hourly_publish,
     revoke_merchant_channel_access,
+    revoke_merchant_multi_channel_access,
     revoke_merchant_required_channel,
+    set_merchant_publication_limit,
     set_merchant_hourly_publish,
 )
 from services.merchant_service import list_merchant_profiles
@@ -89,8 +95,16 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _toggle_merchant_permission(update, context, int(telegram_id_raw), permission_key)
     if data.startswith("MERCHANT_ADM_HOURLY_"):
         return await _toggle_hourly(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_LIMIT_MENU_"):
+        return await _show_publication_limit_menu(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_LIMIT_SET_"):
+        raw = data.removeprefix("MERCHANT_ADM_LIMIT_SET_")
+        telegram_id_raw, limit_raw = raw.split("_", 1)
+        return await _set_publication_limit(update, context, int(telegram_id_raw), int(limit_raw))
     if data.startswith("MERCHANT_ADM_ASSIGN_"):
         return await _show_channel_assignment(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_MULTI_ASSIGN_"):
+        return await _show_multi_channel_assignment(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_REQUIRED_"):
         return await _show_required_assignment(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_CH_TOGGLE_"):
@@ -101,6 +115,10 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         raw = data.removeprefix("MERCHANT_ADM_REQ_TOGGLE_")
         telegram_id_raw, channel_id_raw = raw.split("_", 1)
         return await _toggle_required_channel(update, context, int(telegram_id_raw), int(channel_id_raw))
+    if data.startswith("MERCHANT_ADM_MCH_TOGGLE_"):
+        raw = data.removeprefix("MERCHANT_ADM_MCH_TOGGLE_")
+        telegram_id_raw, channel_id_raw = raw.split("_", 1)
+        return await _toggle_merchant_multi_channel(update, context, int(telegram_id_raw), int(channel_id_raw))
     if data == "MERCHANT_ADM_BACK":
         return await _show_main_menu(update, context)
 
@@ -459,6 +477,7 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
         return await _show_merchants(update, context)
 
     channels, required_channels = _sanitize_merchant_channel_permissions(telegram_id)
+    multi_channels = _sanitize_merchant_multi_channel_permissions(telegram_id)
     all_channels = list_channels(active_only=True)
     by_key = {c["channel_key"]: c["display_name"] for c in all_channels}
 
@@ -472,6 +491,9 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
 
     hourly = merchant_has_hourly_publish(telegram_id)
     hourly_label = "פעיל" if hourly else "כבוי"
+    multi_enabled = "user.publish.multi" in set(get_user_general_permissions(telegram_id))
+    pub_limit = get_merchant_publication_limit(telegram_id, multi_enabled=multi_enabled)
+    multi_label = "פעיל" if multi_enabled else "לא פעיל"
     stats_24h = _merchant_publication_metrics_24h(telegram_id)
 
     await update.callback_query.edit_message_text(
@@ -479,23 +501,82 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
             f"🏪 <b>{merchant['display_name']}</b>\n"
             f"🆔 <code>{telegram_id}</code>\n\n"
             f"⏱️ פרסום כל שעה: <b>{hourly_label}</b>\n"
+            f"🧩 פרסומים מרובים: <b>{multi_label}</b>\n"
+            f"🧮 מכסת פרסומים פתוחים: <b>{pub_limit}</b>\n"
             f"📡 ערוצי פרסום: <b>{len(channels)}</b>\n"
+            f"🧩 ערוצי פרסום מרובה: <b>{len(multi_channels)}</b>\n"
             f"🔐 ערוצי חובה: <b>{len(required_channels)}</b>\n\n"
             f"📨 נשלח ב-24ש: <b>{stats_24h['sent_24h']}</b> | ❌ נכשל ב-24ש: <b>{stats_24h['failed_24h']}</b>\n"
             f"🗂️ פרסומים שמורים: <b>{stats_24h['saved_count']}</b> | 🟢 פעילים: <b>{stats_24h['active_count']}</b>\n\n"
             f"📡 משויך לפרסום: <b>{_format_channel_list(channels)}</b>\n"
+            f"🧩 משויך לפרסום מרובה: <b>{_format_channel_list(multi_channels)}</b>\n"
             f"🔐 חובת הצטרפות: <b>{_format_channel_list(required_channels)}</b>"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 שיוך ערוצים", callback_data=f"MERCHANT_ADM_ASSIGN_{telegram_id}")],
+            [InlineKeyboardButton("🧩 שיוך ערוצי פרסום מרובה", callback_data=f"MERCHANT_ADM_MULTI_ASSIGN_{telegram_id}")],
             [InlineKeyboardButton("🔐 חובת הצטרפות", callback_data=f"MERCHANT_ADM_REQUIRED_{telegram_id}")],
             [InlineKeyboardButton("🔑 הרשאות סוחר", callback_data=f"MERCHANT_ADM_PERMS_{telegram_id}")],
+            [InlineKeyboardButton("🧮 מכסת פרסומים", callback_data=f"MERCHANT_ADM_LIMIT_MENU_{telegram_id}")],
             [InlineKeyboardButton("📊 נתוני פרסום 24 שעות", callback_data=f"MERCHANT_ADM_STATS_{telegram_id}")],
             [InlineKeyboardButton("⏱️ הפעל/כבה כל שעה", callback_data=f"MERCHANT_ADM_HOURLY_{telegram_id}")],
             [InlineKeyboardButton("🔙 חזרה לסוחרים", callback_data="MERCHANT_ADM_LIST")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def _show_publication_limit_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+) -> None:
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants(update, context)
+
+    multi_enabled = "user.publish.multi" in set(get_user_general_permissions(telegram_id))
+    current_limit = get_merchant_publication_limit(telegram_id, multi_enabled=multi_enabled)
+    options = [1, 2, 3, 5, 10]
+    rows: list[list[InlineKeyboardButton]] = []
+    for value in options:
+        mark = "✅" if value == current_limit else "⬜"
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {value} פרסומים פתוחים",
+                callback_data=f"MERCHANT_ADM_LIMIT_SET_{telegram_id}_{value}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")])
+
+    await update.callback_query.edit_message_text(
+        (
+            "🧮 <b>מכסת פרסומים פתוחים לסוחר</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            f"🆔 <code>{telegram_id}</code>\n"
+            f"פרסומים מרובים: <b>{'פעיל' if multi_enabled else 'לא פעיל'}</b>\n"
+            f"מכסה נוכחית: <b>{current_limit}</b>\n\n"
+            f"אם לא הוגדרה מכסה מפורשת, ברירת המחדל לפרסומים מרובים היא {DEFAULT_MULTI_PUBLICATION_LIMIT}."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _set_publication_limit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+    limit_value: int,
+) -> None:
+    ok = set_merchant_publication_limit(
+        telegram_id,
+        limit_value,
+        granted_by=update.callback_query.from_user.id,
+    )
+    await update.callback_query.answer("✅ נשמר" if ok else "❌ שגיאה", show_alert=not ok)
+    await _show_publication_limit_menu(update, context, telegram_id)
 
 
 def _merchant_permission_items() -> list[dict]:
@@ -781,6 +862,36 @@ async def _show_channel_assignment(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def _show_multi_channel_assignment(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_id: int) -> None:
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants(update, context)
+
+    assigned = set(_sanitize_merchant_multi_channel_permissions(telegram_id))
+    channels = list_channels(active_only=True)
+    rows = []
+    for channel in channels:
+        mark = "✅" if channel["channel_key"] in assigned else "⬜"
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {channel['display_name']}",
+                callback_data=f"MERCHANT_ADM_MCH_TOGGLE_{telegram_id}_{channel['id']}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")])
+
+    await update.callback_query.edit_message_text(
+        (
+            "🧩 <b>ערוצי פרסום מרובה</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            "הערוצים כאן תקפים ל-'פרסום נוסף (מרובה)' בלבד."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
 async def _toggle_merchant_channel(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -861,6 +972,31 @@ async def _toggle_required_channel(
     await _show_required_assignment(update, context, telegram_id)
 
 
+async def _toggle_merchant_multi_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+    channel_id: int,
+) -> None:
+    channel = get_channel_by_id(channel_id)
+    if channel is None:
+        await update.callback_query.answer("⚠️ ערוץ לא נמצא", show_alert=True)
+        return await _show_multi_channel_assignment(update, context, telegram_id)
+
+    assigned = set(list_merchant_multi_allowed_channels(telegram_id))
+    if channel["channel_key"] in assigned:
+        ok = revoke_merchant_multi_channel_access(telegram_id, channel["channel_key"])
+    else:
+        ok = grant_merchant_multi_channel_access(
+            telegram_id,
+            channel["channel_key"],
+            granted_by=update.callback_query.from_user.id,
+        )
+
+    await update.callback_query.answer("✅ נשמר" if ok else "❌ שגיאה", show_alert=not ok)
+    await _show_multi_channel_assignment(update, context, telegram_id)
+
+
 def _get_merchant_or_none(telegram_id: int):
     merchants = list_merchant_profiles()
     return next((m for m in merchants if int(m["telegram_id"]) == int(telegram_id)), None)
@@ -886,6 +1022,17 @@ def _sanitize_merchant_channel_permissions(telegram_id: int) -> tuple[list[str],
         required = list_merchant_required_channels(telegram_id)
 
     return allowed, required
+
+
+def _sanitize_merchant_multi_channel_permissions(telegram_id: int) -> list[str]:
+    active_channel_keys = {c["channel_key"] for c in list_channels(active_only=True)}
+    assigned = list_merchant_multi_allowed_channels(telegram_id)
+    stale = [key for key in assigned if key not in active_channel_keys]
+    for key in stale:
+        revoke_merchant_multi_channel_access(telegram_id, key)
+    if stale:
+        assigned = list_merchant_multi_allowed_channels(telegram_id)
+    return assigned
 
 
 def _back_to_channels_kb() -> InlineKeyboardMarkup:

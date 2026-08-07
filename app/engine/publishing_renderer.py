@@ -55,6 +55,7 @@ from services.merchant_service import (
     get_merchant_profile,
     get_merchant_capability_flags,
     list_merchant_allowed_channel_records,
+    list_merchant_multi_allowed_channel_records,
     list_merchant_required_channel_records,
 )
 from services.subscriber_publication_service import (
@@ -70,6 +71,7 @@ from services.subscriber_publication_service import (
     update_publication_record,
 )
 from repositories.merchant_publication_repository import merchant_has_hourly_publish
+from repositories.merchant_publication_repository import get_merchant_publication_limit
 from repositories.merchant_channels_repository import (
     get_channel_join_url,
     get_channel_membership_chat_ref,
@@ -124,6 +126,7 @@ _MERCHANT_CONTACT_TARGET_KEY = "merchant_contact_target"
 _MERCHANT_EDIT_PUB_ID_KEY = "merchant_edit_publication_id"
 _MERCHANT_CHANNEL_PICKER_SOURCE_KEY = "merchant_channel_picker_source"
 _MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY = "merchant_required_join_last_state"
+_MERCHANT_PUBLICATION_MODE_KEY = "merchant_publication_mode"
 
 _AWAIT_MERCHANT_TEXT = "merchant_await_text"
 _AWAIT_MERCHANT_MEDIA = "merchant_await_media"
@@ -208,8 +211,19 @@ def _reset_merchant_publication_state(
     context.user_data.pop(_MERCHANT_DRAFT_KEY, None)
     context.user_data.pop(_MERCHANT_EDIT_PUB_ID_KEY, None)
     context.user_data.pop(_MERCHANT_STATE_KEY, None)
+    context.user_data.pop(_MERCHANT_PUBLICATION_MODE_KEY, None)
     if clear_selection:
         context.user_data.pop(_MERCHANT_SELECTED_CHANNELS_KEY, None)
+
+
+def _get_merchant_publication_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
+    mode = str(context.user_data.get(_MERCHANT_PUBLICATION_MODE_KEY) or "regular").strip().lower()
+    return mode if mode in {"regular", "multi"} else "regular"
+
+
+def _set_merchant_publication_mode(context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    normalized = str(mode or "regular").strip().lower()
+    context.user_data[_MERCHANT_PUBLICATION_MODE_KEY] = normalized if normalized in {"regular", "multi"} else "regular"
 
 
 def _next_hour_from_now(now: datetime) -> datetime:
@@ -218,6 +232,10 @@ def _next_hour_from_now(now: datetime) -> datetime:
 
 def _manual_send_wait_seconds(merchant_id: int) -> int:
     last_sent_raw = get_creator_last_sent_at(merchant_id)
+    return _manual_send_wait_seconds_by_last_sent(last_sent_raw)
+
+
+def _manual_send_wait_seconds_by_last_sent(last_sent_raw: str | None) -> int:
     if not last_sent_raw:
         return 0
     try:
@@ -242,11 +260,37 @@ def _has_any_media_permission(capability_flags: dict[str, bool]) -> bool:
     )
 
 
+def _kb_merchant_back_to_compose() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ חזרה לעריכת פרסום", callback_data="pub:user:merchant:compose")],
+        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+    ])
+
+
+def _kb_merchant_cancel_input() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ ביטול קלט", callback_data="pub:user:merchant:cancelinput")],
+        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+    ])
+
+
 async def _send_manual_cooldown_message(bot: Bot, chat_id: int, wait_seconds: int) -> None:
+    await _send_manual_cooldown_message_scoped(bot, chat_id, wait_seconds, per_publication=False)
+
+
+async def _send_manual_cooldown_message_scoped(
+    bot: Bot,
+    chat_id: int,
+    wait_seconds: int,
+    *,
+    per_publication: bool,
+) -> None:
+    scope_line = "לפרסום הזה" if per_publication else "לחשבון"
     await bot.send_message(
         chat_id,
         (
             "⏳ <b>שליחה מיידית מוגבלת לפעם בשעה</b>\n\n"
+            f"ההגבלה כרגע מחושבת {scope_line}.\n"
             f"אפשר לשלוח שוב בעוד: <b>{_format_wait_minutes_seconds(wait_seconds)}</b>"
         ),
         parse_mode="HTML",
@@ -254,6 +298,37 @@ async def _send_manual_cooldown_message(bot: Bot, chat_id: int, wait_seconds: in
             [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
         ]),
     )
+
+
+def _is_multi_publication_enabled_for_creator(creator_id: int) -> bool:
+    if creator_id <= 0:
+        return False
+    flags = get_merchant_capability_flags(creator_id)
+    return bool(flags.get("user.publish.multi"))
+
+
+def _merchant_open_publication_limit(merchant_id: int, capability_flags: dict[str, bool]) -> int:
+    multi_enabled = bool(capability_flags.get("user.publish.multi"))
+    return get_merchant_publication_limit(merchant_id, multi_enabled=multi_enabled)
+
+
+def _manual_send_wait_seconds_for_publication(publication: dict | None) -> int:
+    if not publication:
+        return 0
+    return _manual_send_wait_seconds_by_last_sent(str(publication.get("last_sent_at") or "").strip())
+
+
+def _resolve_manual_wait_seconds(
+    merchant_id: int,
+    capability_flags: dict[str, bool],
+    publication_id: int,
+) -> tuple[int, bool]:
+    if capability_flags.get("user.publish.multi"):
+        if publication_id > 0:
+            publication = get_publication(publication_id)
+            return _manual_send_wait_seconds_for_publication(publication), True
+        return 0, True
+    return _manual_send_wait_seconds(merchant_id), False
 
 
 def _draft_media_summary(draft: dict) -> str:
@@ -352,7 +427,10 @@ def _merchant_next_run_display(pub: dict) -> str:
         return f"{next_run_dt.strftime('%d/%m %H:%M')} (בעוד {_format_duration_from_now(next_run_dt)})"
 
     creator_id = int(pub.get("created_by") or 0)
-    last_sent_raw = get_creator_last_sent_at(creator_id) if creator_id > 0 else None
+    if _is_multi_publication_enabled_for_creator(creator_id):
+        last_sent_raw = str(pub.get("last_sent_at") or "").strip() or None
+    else:
+        last_sent_raw = get_creator_last_sent_at(creator_id) if creator_id > 0 else None
     last_sent_dt = _parse_publication_dt(last_sent_raw)
     if not last_sent_dt:
         return "אפשר עכשיו"
@@ -364,7 +442,12 @@ def _merchant_next_run_display(pub: dict) -> str:
 
 
 def _merchant_next_run_label(pub: dict) -> str:
-    return "הפעלה הבאה" if _parse_publication_dt(pub.get("next_run_at")) else "שליחה ידנית הבאה לכל החשבון"
+    if _parse_publication_dt(pub.get("next_run_at")):
+        return "הפעלה הבאה"
+    creator_id = int(pub.get("created_by") or 0)
+    if _is_multi_publication_enabled_for_creator(creator_id):
+        return "שליחה ידנית הבאה לפרסום זה"
+    return "שליחה ידנית הבאה לכל החשבון"
 
 
 def _merchant_feature_allowed(capability_flags: dict[str, bool], key: str) -> bool:
@@ -420,7 +503,11 @@ async def _show_merchant_publication_list(
         "🗂️ <b>הפרסומים שלי</b>",
         "",
         "כאן אפשר לפתוח פרסום קיים, לערוך אותו, לשלוח שוב או למחוק.",
-        "זמן השליחה הידנית משותף לכל הפרסומים של החשבון, ולא מחושב בנפרד לכל פרסום.",
+        (
+            "זמן השליחה הידנית מחושב בנפרד לכל פרסום (פרסומים מרובים פעיל)."
+            if get_merchant_capability_flags(merchant_id).get("user.publish.multi")
+            else "זמן השליחה הידנית משותף לכל הפרסומים של החשבון, ולא מחושב בנפרד לכל פרסום."
+        ),
     ]
     if not rows_data:
         lines.append("אין עדיין פרסומים שמורים.")
@@ -468,11 +555,15 @@ async def _show_merchant_publication_details(
         [InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"pub:user:merchant:pubpreview:{publication_id}")],
         [InlineKeyboardButton("✏️ ערוך ושמור", callback_data=f"pub:user:merchant:pubedit:{publication_id}")],
     ]
+    creator_id = int(pub.get("created_by") or 0)
+    hourly_permission_enabled = merchant_has_hourly_publish(creator_id)
     if int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active":
         rows.append([InlineKeyboardButton("📨 שליחה מיידית נוספת", callback_data=f"pub:user:merchant:pubrun:{publication_id}")])
         rows.append([InlineKeyboardButton("⛔ עצור שעתי", callback_data=f"pub:user:merchant:pubstop:{publication_id}")])
     else:
         rows.append([InlineKeyboardButton("🚀 פרסם עכשיו", callback_data=f"pub:user:merchant:pubrun:{publication_id}")])
+        if hourly_permission_enabled:
+            rows.append([InlineKeyboardButton("⏱️ הפעל אוטומטי כל שעה", callback_data=f"pub:user:merchant:pubhourly:{publication_id}")])
     rows.append([InlineKeyboardButton("🗑️ מחק פרסום", callback_data=f"pub:user:merchant:pubdel:{publication_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data="pub:user:merchant:mypubs")])
 
@@ -485,7 +576,7 @@ async def _show_merchant_publication_details(
             + (f"🕓 עדכון/שליחה אחרונה: <b>{meta}</b>\n" if meta else "")
             + f"🖼️ מדיה: <b>{media_line}</b>\n"
             + f"🕒 {next_run_label}: <b>{next_run_at}</b>\n\n"
-            + ("ℹ️ הזמן הידני הבא משותף לכל הפרסומים בחשבון זה.\n\n" if next_run_label != "הפעלה הבאה" else "")
+            + ("ℹ️ הזמן הידני הבא משותף לכל הפרסומים בחשבון זה.\n\n" if next_run_label == "שליחה ידנית הבאה לכל החשבון" else "")
             + f"{content_preview}"
         ),
         parse_mode="HTML",
@@ -500,6 +591,8 @@ async def _send_merchant_compose_screen(
     merchant_id: int,
     allowed_channel_records: list[dict],
     capability_flags: dict[str, bool],
+    *,
+    publication_mode: str = "regular",
 ) -> None:
     selected = _get_selected_merchant_channels(context, allowed_channel_records)
     draft = _get_merchant_draft(context, selected)
@@ -513,11 +606,12 @@ async def _send_merchant_compose_screen(
     has_saved_content = bool(str(draft.get("content_text") or "").strip() or str(draft.get("file_id") or "").strip())
     save_line = "💾 נשמר אוטומטית כטיוטה לפני שליחה.\n" if has_saved_content else "💾 טיוטה תישמר אוטומטית אחרי טקסט או מדיה ראשונים.\n"
     edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
-    mode_line = f"✏️ מצב עריכה לפרסום #{edit_pub_id}" if edit_pub_id > 0 else "🆕 פרסום חדש"
+    mode_label = "פרסום מרובה" if publication_mode == "multi" else "פרסום רגיל"
+    mode_line = f"✏️ מצב עריכה לפרסום #{edit_pub_id}" if edit_pub_id > 0 else f"🆕 {mode_label}"
     hourly_only = merchant_has_hourly_publish(merchant_id)
 
     rows = [
-        [InlineKeyboardButton("📡 בחר ערוצים", callback_data="pub:user:merchant:start")],
+        [InlineKeyboardButton("📡 בחר ערוצים", callback_data="pub:user:merchant:startcompose")],
         [InlineKeyboardButton("📝 ערוך טקסט", callback_data="pub:user:merchant:settext")],
     ]
     if _has_any_media_permission(capability_flags):
@@ -569,6 +663,7 @@ async def _send_merchant_publication_preview(
         await bot.send_message(
             chat_id,
             "⚠️ עדיין לא הוזן תוכן לתצוגה מקדימה. הטיוטה שמורה, אבל צריך להוסיף טקסט או מדיה כדי לראות תצוגה.",
+            reply_markup=_kb_merchant_back_to_compose(),
         )
         return
 
@@ -652,10 +747,10 @@ def _ensure_merchant_draft_record(
     if not content_text and not file_id:
         return 0, "no_content"
 
-    if not capability_flags.get("user.publish.multi"):
-        open_count = count_open_creator_publications(merchant_id)
-        if open_count >= 1:
-            return 0, "blocked"
+    open_count = count_open_creator_publications(merchant_id)
+    max_open = _merchant_open_publication_limit(merchant_id, capability_flags)
+    if open_count >= max_open:
+        return 0, "blocked"
 
     new_pub_id = create_publication_record(
         title=title,
@@ -706,9 +801,19 @@ async def _run_merchant_publication_send(
     *,
     recurring_hourly: bool,
 ) -> None:
-    wait_seconds = _manual_send_wait_seconds(merchant_id)
+    edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
+    wait_seconds, per_publication_wait = _resolve_manual_wait_seconds(
+        merchant_id,
+        capability_flags,
+        edit_pub_id,
+    )
     if wait_seconds > 0:
-        await _send_manual_cooldown_message(bot, chat_id, wait_seconds)
+        await _send_manual_cooldown_message_scoped(
+            bot,
+            chat_id,
+            wait_seconds,
+            per_publication=per_publication_wait,
+        )
         return
 
     selected = _get_selected_merchant_channels(context, allowed_channel_records)
@@ -716,7 +821,14 @@ async def _run_merchant_publication_send(
         ch for ch in allowed_channel_records if str(ch.get("channel_key") or "") in selected
     ]
     if not selected_channels:
-        await bot.send_message(chat_id, "⚠️ צריך לבחור לפחות ערוץ אחד.")
+        await bot.send_message(
+            chat_id,
+            "⚠️ צריך לבחור לפחות ערוץ אחד.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📡 בחר ערוצים", callback_data="pub:user:merchant:start")],
+                [InlineKeyboardButton("⬅️ חזרה לעריכת פרסום", callback_data="pub:user:merchant:compose")],
+            ]),
+        )
         return
 
     refs, invalid_names = _resolve_selected_publish_refs(selected_channels)
@@ -725,6 +837,10 @@ async def _run_merchant_publication_send(
             chat_id,
             "⛔ אי אפשר לפרסם לערוצים הבאים כי חסר להם @username ציבורי או מזהה -100:\n"
             + "\n".join(f"• {name}" for name in invalid_names),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📡 חזור לבחירת ערוצים", callback_data="pub:user:merchant:start")],
+                [InlineKeyboardButton("⬅️ חזרה לעריכת פרסום", callback_data="pub:user:merchant:compose")],
+            ]),
         )
         return
 
@@ -733,21 +849,28 @@ async def _run_merchant_publication_send(
     file_id = str(draft.get("file_id") or "").strip() or None
     media_type = str(draft.get("media_type") or "").strip() or None
     if not content_text and not file_id:
-        await bot.send_message(chat_id, "⚠️ צריך להוסיף טקסט או מדיה לפני שליחה.")
+        await bot.send_message(
+            chat_id,
+            "⚠️ צריך להוסיף טקסט או מדיה לפני שליחה.",
+            reply_markup=_kb_merchant_back_to_compose(),
+        )
         return
 
     bot_username = await _get_bot_username(bot, context)
     buttons = _build_merchant_publication_button_defs(bot_username, merchant_id)
     target_value = json.dumps(refs, ensure_ascii=False)
     title = f"פרסום סוחר #{merchant_id}"
-    edit_pub_id = int(context.user_data.get(_MERCHANT_EDIT_PUB_ID_KEY) or 0)
 
     if edit_pub_id <= 0 and not capability_flags.get("user.publish.multi"):
+        pass
+
+    if edit_pub_id <= 0:
         open_count = count_open_creator_publications(merchant_id)
-        if open_count >= 1:
+        max_open = _merchant_open_publication_limit(merchant_id, capability_flags)
+        if open_count >= max_open:
             await bot.send_message(
                 chat_id,
-                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi",
+                f"⛔ הגעת למכסת הפרסומים שלך ({max_open}). מחק/עצור פרסום קיים או פנה למנהל להגדלת המכסה.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")],
                     [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
@@ -972,7 +1095,10 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
     if state == _AWAIT_MERCHANT_TEXT:
         content = (update.message.text or "").strip()
         if not content:
-            await update.message.reply_text("✍️ שלח טקסט לפרסום.")
+            await update.message.reply_text(
+                "✍️ שלח טקסט לפרסום.",
+                reply_markup=_kb_merchant_cancel_input(),
+            )
             return True
         draft = _get_merchant_draft(context)
         draft["content_text"] = content
@@ -986,12 +1112,17 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
         )
         if draft_state == "blocked":
             context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            limit = _merchant_open_publication_limit(update.effective_user.id, capability_flags)
             await update.message.reply_text(
-                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi"
+                f"⛔ הגעת למכסה המותרת ({limit}) ולא ניתן לפתוח עוד פרסום כרגע.",
+                reply_markup=_kb_merchant_back_to_compose(),
             )
             return True
         if draft_state == "error":
-            await update.message.reply_text("❌ שגיאה בשמירת הטיוטה.")
+            await update.message.reply_text(
+                "❌ שגיאה בשמירת הטיוטה.",
+                reply_markup=_kb_merchant_back_to_compose(),
+            )
             return True
         context.user_data.pop(_MERCHANT_STATE_KEY, None)
         await _send_merchant_compose_screen(
@@ -1023,7 +1154,10 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
             media_type = "audio"
             file_id = update.message.audio.file_id
         if not media_type or not file_id:
-            await update.message.reply_text("🖼️ שלח תמונה, וידאו, אנימציה, מסמך או אודיו.")
+            await update.message.reply_text(
+                "🖼️ שלח תמונה, וידאו, אנימציה, מסמך או אודיו.",
+                reply_markup=_kb_merchant_cancel_input(),
+            )
             return True
 
         capability_flags = get_merchant_capability_flags(update.effective_user.id)
@@ -1036,7 +1170,10 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
         }
         required_perm = media_perm_by_type.get(media_type)
         if required_perm and not capability_flags.get(required_perm):
-            await update.message.reply_text("⛔ אין לך הרשאה לסוג המדיה הזה.")
+            await update.message.reply_text(
+                "⛔ אין לך הרשאה לסוג המדיה הזה.",
+                reply_markup=_kb_merchant_cancel_input(),
+            )
             return True
         draft = _get_merchant_draft(context)
         draft["media_type"] = media_type
@@ -1050,12 +1187,17 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
         )
         if draft_state == "blocked":
             context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            limit = _merchant_open_publication_limit(update.effective_user.id, capability_flags)
             await update.message.reply_text(
-                "⛔ כבר יש לך פרסום שמור פעיל. כדי ליצור פרסום נוסף נדרשת הרשאה: user.publish.multi"
+                f"⛔ הגעת למכסה המותרת ({limit}) ולא ניתן לפתוח עוד פרסום כרגע.",
+                reply_markup=_kb_merchant_back_to_compose(),
             )
             return True
         if draft_state == "error":
-            await update.message.reply_text("❌ שגיאה בשמירת הטיוטה.")
+            await update.message.reply_text(
+                "❌ שגיאה בשמירת הטיוטה.",
+                reply_markup=_kb_merchant_back_to_compose(),
+            )
             return True
         context.user_data.pop(_MERCHANT_STATE_KEY, None)
         await _send_merchant_compose_screen(
@@ -1908,6 +2050,9 @@ async def _send_merchant_start_screen(
     allowed_channel_records: list[dict],
     selected_channel_keys: set[str],
     capability_flags: dict[str, bool],
+    *,
+    publication_mode: str = "regular",
+    back_callback_data: str = "pub:user:merchant",
 ) -> None:
     allowed_media_labels = []
     if capability_flags.get("user.media.image"):
@@ -1939,13 +2084,13 @@ async def _send_merchant_start_screen(
 
     rows.extend([
         [InlineKeyboardButton("▶️ המשך", callback_data="pub:user:merchant:startconfirm")],
-        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+        [InlineKeyboardButton("⬅️ חזרה", callback_data=back_callback_data)],
     ])
 
     await bot.send_message(
         chat_id,
         (
-            "▶️ <b>התחל פרסום</b>\n\n"
+            f"▶️ <b>התחל {'פרסום מרובה' if publication_mode == 'multi' else 'פרסום רגיל'}</b>\n\n"
             f"מותר לך כרגע להעלות: <b>{media_line}</b>\n"
             "בחר את הערוצים שאליהם תרצה לפרסם:\n\n"
             + "\n".join(lines)
@@ -1960,6 +2105,9 @@ async def _send_merchant_channels_picker_screen(
     chat_id: int,
     allowed_channel_records: list[dict],
     selected_channel_keys: set[str],
+    *,
+    publication_mode: str = "regular",
+    back_callback_data: str = "pub:user:merchant",
 ) -> None:
     lines = []
     rows: list[list[InlineKeyboardButton]] = []
@@ -1978,13 +2126,13 @@ async def _send_merchant_channels_picker_screen(
 
     rows.extend([
         [InlineKeyboardButton("▶️ המשך לפרסום", callback_data="pub:user:merchant:startconfirm")],
-        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+        [InlineKeyboardButton("⬅️ חזרה", callback_data=back_callback_data)],
     ])
 
     await bot.send_message(
         chat_id,
         (
-            "📡 <b>הערוצים שלי</b>\n\n"
+            f"📡 <b>{'ערוצי פרסום מרובה' if publication_mode == 'multi' else 'הערוצים שלי'}</b>\n\n"
             "בחר כאן את הערוצים שאליהם הפרסום יישלח כרגע.\n\n"
             + ("\n".join(lines) if lines else "אין עדיין ערוצים מורשים.")
         ),
@@ -2077,12 +2225,21 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         sub_action = parts[3] if len(parts) > 3 else ""
         if not sub_action:
+            _set_merchant_publication_mode(context, "regular")
             has_saved_publications = bool(list_creator_publications(query.from_user.id, limit=1))
             if not has_saved_publications:
                 _reset_merchant_publication_state(context, clear_selection=True)
-        allowed_channel_records = list_merchant_allowed_channel_records(query.from_user.id)
+
+        regular_channel_records = list_merchant_allowed_channel_records(query.from_user.id)
+        multi_channel_records = list_merchant_multi_allowed_channel_records(query.from_user.id)
+        current_mode = _get_merchant_publication_mode(context)
+        if sub_action == "newpub":
+            current_mode = "multi"
+        allowed_channel_records = multi_channel_records if current_mode == "multi" else regular_channel_records
         required_channel_records = list_merchant_required_channel_records(query.from_user.id)
         channels = [channel["display_name"] for channel in allowed_channel_records]
+        regular_channels_count = len(regular_channel_records)
+        multi_channels_count = len(multi_channel_records)
         is_hourly = merchant_has_hourly_publish(query.from_user.id)
         capability_flags = get_merchant_capability_flags(query.from_user.id)
         can_start_publication = can_merchant_start_publication(query.from_user.id)
@@ -2092,8 +2249,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         not_joined_required = [item for item in required_statuses if item["status"] != "joined"]
 
         required_gate_actions = {
-            "compose", "start", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly",
-            "schedule", "mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubstop", "pubdel",
+            "compose", "newpub", "start", "startcompose", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly",
+            "schedule", "mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubhourly", "pubstop", "pubdel",
         }
         if sub_action in required_gate_actions and missing_required:
             await _send_required_channels_gate(bot, chat_id, required_statuses)
@@ -2119,12 +2276,12 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             context.user_data.pop(_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY, None)
 
-        if sub_action in {"compose", "start", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly"}:
+        if sub_action in {"compose", "newpub", "start", "startcompose", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly", "cancelinput"}:
             if not _merchant_feature_allowed(capability_flags, "user.merchant.start"):
                 await bot.send_message(chat_id, "⛔ אין לך הרשאה: התחל פרסום.")
                 return
 
-        if sub_action in {"mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubstop", "pubdel"}:
+        if sub_action in {"mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubhourly", "pubstop", "pubdel"}:
             if not _merchant_feature_allowed(capability_flags, "user.merchant.publications"):
                 await bot.send_message(chat_id, "⛔ אין לך הרשאה: הפרסומים שלי.")
                 return
@@ -2155,6 +2312,9 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if sub_action == "compose":
+            if current_mode not in {"regular", "multi"}:
+                current_mode = "regular"
+            _set_merchant_publication_mode(context, current_mode)
             await _send_merchant_compose_screen(
                 bot,
                 chat_id,
@@ -2162,7 +2322,46 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 query.from_user.id,
                 allowed_channel_records,
                 capability_flags,
+                publication_mode=current_mode,
             )
+            return
+
+        if sub_action == "newpub":
+            # יצירת פרסום נוסף צריכה להתחיל מטיוטה נפרדת ונקיה.
+            if not capability_flags.get("user.publish.multi"):
+                await bot.send_message(chat_id, "⛔ אין לך הרשאה לפרסום מרובה.")
+                return
+            _reset_merchant_publication_state(context, clear_selection=True)
+            _set_merchant_publication_mode(context, "multi")
+            allowed_channel_records = list_merchant_multi_allowed_channel_records(query.from_user.id)
+            if not allowed_channel_records:
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך ערוצים משויכים לפרסום מרובה. מנהל צריך לשייך ערוצים ייעודיים לפרסום מרובה.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            context.user_data[_MERCHANT_SELECTED_CHANNELS_KEY] = []
+            await _send_merchant_compose_screen(
+                bot,
+                chat_id,
+                context,
+                query.from_user.id,
+                allowed_channel_records,
+                capability_flags,
+                publication_mode="multi",
+            )
+            await bot.send_message(
+                chat_id,
+                "🧩 נפתחה טיוטה חדשה ונפרדת. בחר ערוצים ותוכן לפרסום החדש.",
+            )
+            return
+
+        if sub_action == "cancelinput":
+            context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            await bot.send_message(chat_id, "✅ בוטל. חזרת לעריכת הפרסום.", reply_markup=_kb_merchant_back_to_compose())
             return
 
         if sub_action == "mypubs":
@@ -2214,6 +2413,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 query.from_user.id,
                 allowed_channel_records,
                 capability_flags,
+                publication_mode=current_mode,
             )
             return
 
@@ -2225,9 +2425,18 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             is_active_recurring = int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active"
             if is_active_recurring:
-                wait_seconds = _manual_send_wait_seconds(query.from_user.id)
+                wait_seconds, per_publication_wait = _resolve_manual_wait_seconds(
+                    query.from_user.id,
+                    capability_flags,
+                    pub_id,
+                )
                 if wait_seconds > 0:
-                    await _send_manual_cooldown_message(bot, chat_id, wait_seconds)
+                    await _send_manual_cooldown_message_scoped(
+                        bot,
+                        chat_id,
+                        wait_seconds,
+                        per_publication=per_publication_wait,
+                    )
                     return
                 selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
                 selected_channels = [
@@ -2268,6 +2477,38 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 allowed_channel_records,
                 capability_flags,
                 recurring_hourly=False,
+            )
+            return
+
+        if sub_action == "pubhourly" and len(parts) > 4:
+            pub_id = int(parts[4])
+            pub = get_publication(pub_id)
+            if not pub or int(pub.get("created_by") or 0) != query.from_user.id:
+                await bot.send_message(chat_id, "⚠️ הפרסום לא נמצא.")
+                return
+            if not merchant_has_hourly_publish(query.from_user.id):
+                await bot.send_message(chat_id, "⛔ לא הופעלה עבורך אפשרות פרסום שעתי על ידי מנהל.")
+                return
+            if int(pub.get("is_recurring") or 0) == 1 and str(pub.get("status") or "") == "active":
+                await bot.send_message(chat_id, "ℹ️ פרסום זה כבר מוגדר לאוטומציה כל שעה.")
+                await _show_merchant_publication_details(bot, chat_id, pub_id)
+                return
+
+            selected_keys = _detect_selected_keys_from_publication(pub, allowed_channel_records)
+            _get_merchant_draft(context, selected_keys)
+            draft = context.user_data[_MERCHANT_DRAFT_KEY]
+            draft["content_text"] = str(pub.get("content_text") or "")
+            draft["media_type"] = str(pub.get("media_type") or "") or None
+            draft["file_id"] = str(pub.get("file_id") or "") or None
+            context.user_data[_MERCHANT_EDIT_PUB_ID_KEY] = pub_id
+            await _run_merchant_publication_send(
+                bot,
+                chat_id,
+                context,
+                query.from_user.id,
+                allowed_channel_records,
+                capability_flags,
+                recurring_hourly=True,
             )
             return
 
@@ -2315,17 +2556,22 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if sub_action == "channels":
             context.user_data[_MERCHANT_CHANNEL_PICKER_SOURCE_KEY] = "channels"
+            _set_merchant_publication_mode(context, "regular")
+            allowed_channel_records = regular_channel_records
             selected = _get_selected_merchant_channels(context, allowed_channel_records)
             await _send_merchant_channels_picker_screen(
                 bot,
                 chat_id,
                 allowed_channel_records,
                 selected,
+                publication_mode="regular",
             )
             return
 
         if sub_action == "status":
             hourly_label = "פעיל" if is_hourly else "לא פעיל"
+            multi_label = "פעיל" if capability_flags.get("user.publish.multi") else "לא פעיל"
+            limit_label = str(_merchant_open_publication_limit(query.from_user.id, capability_flags))
             capability_lines = [
                 f"✅ {label}"
                 for key, label in MERCHANT_CAPABILITY_LABELS.items()
@@ -2342,7 +2588,10 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 (
                     "🛡️ <b>ההרשאות והמצב שלך</b>\n\n"
                     f"⏱️ פרסום שעתי: <b>{hourly_label}</b>\n"
-                    f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n"
+                    f"🧩 פרסומים מרובים: <b>{multi_label}</b>\n"
+                    f"🧮 מכסת פרסומים פתוחים: <b>{limit_label}</b>\n"
+                    f"📡 ערוצי פרסום רגיל: <b>{regular_channels_count}</b>\n"
+                    f"🧩 ערוצי פרסום מרובה: <b>{multi_channels_count}</b>\n"
                     f"🔐 ערוצי חובה: <b>{len(required_statuses)}</b>\n\n"
                     + "\n".join(capability_lines)
                     + ("\n\n🔐 <b>בדיקת הצטרפות</b>\n" + "\n".join(required_lines) if required_lines else "")
@@ -2354,7 +2603,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        if sub_action == "start":
+        if sub_action in {"start", "startcompose"}:
             if missing_required:
                 await _send_required_channels_gate(bot, chat_id, required_statuses)
                 return
@@ -2377,13 +2626,17 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
             selected = _get_selected_merchant_channels(context, allowed_channel_records)
-            context.user_data[_MERCHANT_CHANNEL_PICKER_SOURCE_KEY] = "start"
+            picker_source = "startcompose" if sub_action == "startcompose" else "start"
+            context.user_data[_MERCHANT_CHANNEL_PICKER_SOURCE_KEY] = picker_source
+            back_callback_data = "pub:user:merchant:compose" if picker_source == "startcompose" else "pub:user:merchant"
             await _send_merchant_start_screen(
                 bot,
                 chat_id,
                 allowed_channel_records,
                 selected,
                 capability_flags,
+                publication_mode=current_mode,
+                back_callback_data=back_callback_data,
             )
             return
 
@@ -2407,14 +2660,20 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     chat_id,
                     allowed_channel_records,
                     selected,
+                    publication_mode=current_mode,
+                    back_callback_data="pub:user:merchant",
                 )
             else:
+                picker_source = str(context.user_data.get(_MERCHANT_CHANNEL_PICKER_SOURCE_KEY) or "start")
+                back_callback_data = "pub:user:merchant:compose" if picker_source == "startcompose" else "pub:user:merchant"
                 await _send_merchant_start_screen(
                     bot,
                     chat_id,
                     allowed_channel_records,
                     selected,
                     capability_flags,
+                    publication_mode=current_mode,
+                    back_callback_data=back_callback_data,
                 )
             return
 
@@ -2437,12 +2696,17 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 query.from_user.id,
                 allowed_channel_records,
                 capability_flags,
+                publication_mode=current_mode,
             )
             return
 
         if sub_action == "settext":
             context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_TEXT
-            await bot.send_message(chat_id, "📝 שלח עכשיו את הטקסט לפרסום.")
+            await bot.send_message(
+                chat_id,
+                "📝 שלח עכשיו את הטקסט לפרסום.",
+                reply_markup=_kb_merchant_cancel_input(),
+            )
             return
 
         if sub_action == "setmedia":
@@ -2450,7 +2714,11 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await bot.send_message(chat_id, "⛔ אין לך הרשאת העלאת מדיה.")
                 return
             context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_MEDIA
-            await bot.send_message(chat_id, "🖼️ שלח עכשיו תמונה / וידאו / אנימציה / מסמך / אודיו לפרסום.")
+            await bot.send_message(
+                chat_id,
+                "🖼️ שלח עכשיו תמונה / וידאו / אנימציה / מסמך / אודיו לפרסום.",
+                reply_markup=_kb_merchant_cancel_input(),
+            )
             return
 
         if sub_action == "preview":
@@ -2555,6 +2823,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         menu_rows = []
         if capability_flags.get("user.merchant.start") and can_start_publication and not missing_required:
             menu_rows.append([InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")])
+            if capability_flags.get("user.publish.multi"):
+                menu_rows.append([InlineKeyboardButton("🧩 פרסום נוסף (מרובה)", callback_data="pub:user:merchant:newpub")])
         if capability_flags.get("user.merchant.schedule") and not missing_required:
             menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
         if capability_flags.get("user.review.write"):
@@ -2597,7 +2867,11 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "כאן אפשר לנהל פרסומים, ערוצים ותזמון.\n\n"
                 f"{prefix}"
                 f"⏱️ פרסום שעתי: <b>{hourly_label}</b>\n"
-                f"📡 ערוצים מורשים: <b>{len(channels)}</b>\n\n"
+                f"🧩 פרסומים מרובים: <b>{'פעיל' if capability_flags.get('user.publish.multi') else 'לא פעיל'}</b>\n"
+                f"🧮 מכסה פתוחה: <b>{_merchant_open_publication_limit(query.from_user.id, capability_flags)}</b>\n"
+                f"📡 ערוצי פרסום רגיל: <b>{regular_channels_count}</b>\n"
+                f"🧩 ערוצי פרסום מרובה: <b>{multi_channels_count}</b>\n"
+                f"📍 מצב עריכה נוכחי: <b>{'פרסום מרובה' if current_mode == 'multi' else 'פרסום רגיל'}</b>\n\n"
                 f"{channels_preview}"
             ),
             parse_mode="HTML",

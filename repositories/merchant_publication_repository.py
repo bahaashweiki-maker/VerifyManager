@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 MERCHANT_BASE_PERMISSION = "merchant"
 MERCHANT_HOURLY_PERMISSION = "merchant.publish.hourly"
 MERCHANT_CHANNEL_PREFIX = "merchant.publish.channel."
+MERCHANT_MULTI_CHANNEL_PREFIX = "merchant.publish.multi.channel."
 MERCHANT_REQUIRED_CHANNEL_PREFIX = "merchant.required.channel."
+MERCHANT_MAX_PUBLICATIONS_PREFIX = "merchant.publish.max."
+DEFAULT_MULTI_PUBLICATION_LIMIT = 2
 
 
 def normalize_channel_key(raw: str) -> str:
@@ -167,6 +170,11 @@ def list_merchant_allowed_channels(telegram_id: int) -> list[str]:
     return _list_channel_keys_by_prefix(telegram_id, MERCHANT_CHANNEL_PREFIX)
 
 
+def list_merchant_multi_allowed_channels(telegram_id: int) -> list[str]:
+    """Return normalized channel keys for merchant multi-publication flow."""
+    return _list_channel_keys_by_prefix(telegram_id, MERCHANT_MULTI_CHANNEL_PREFIX)
+
+
 def list_merchant_required_channels(telegram_id: int) -> list[str]:
     """Return normalized channel keys the merchant must join before publishing."""
     return _list_channel_keys_by_prefix(telegram_id, MERCHANT_REQUIRED_CHANNEL_PREFIX)
@@ -198,6 +206,33 @@ def grant_merchant_channel_access(
         return False
 
 
+def grant_merchant_multi_channel_access(
+    telegram_id: int,
+    channel_key: str,
+    granted_by: int | None = None,
+) -> bool:
+    """Grant channel access for merchant multi-publication flow."""
+    key = normalize_channel_key(channel_key)
+    if not key:
+        return False
+    permission = f"{MERCHANT_MULTI_CHANNEL_PREFIX}{key}"
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_permissions
+                    (telegram_id, permission, granted_by)
+                VALUES (?, ?, ?)
+                """,
+                (telegram_id, permission, granted_by),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("grant_merchant_multi_channel_access(%s, %s) failed: %s", telegram_id, channel_key, exc)
+        return False
+
+
 def revoke_merchant_channel_access(telegram_id: int, channel_key: str) -> bool:
     """Revoke channel publish access from a merchant."""
     permission = _channel_permission_key(channel_key)
@@ -216,6 +251,28 @@ def revoke_merchant_channel_access(telegram_id: int, channel_key: str) -> bool:
         return True
     except sqlite3.Error as exc:
         logger.error("revoke_merchant_channel_access(%s, %s) failed: %s", telegram_id, channel_key, exc)
+        return False
+
+
+def revoke_merchant_multi_channel_access(telegram_id: int, channel_key: str) -> bool:
+    """Revoke channel access for merchant multi-publication flow."""
+    key = normalize_channel_key(channel_key)
+    if not key:
+        return False
+    permission = f"{MERCHANT_MULTI_CHANNEL_PREFIX}{key}"
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM user_permissions
+                WHERE telegram_id = ? AND permission = ?
+                """,
+                (telegram_id, permission),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("revoke_merchant_multi_channel_access(%s, %s) failed: %s", telegram_id, channel_key, exc)
         return False
 
 
@@ -238,6 +295,83 @@ def merchant_can_publish_to_channel(telegram_id: int, channel_key: str) -> bool:
         return row is not None
     except sqlite3.Error as exc:
         logger.error("merchant_can_publish_to_channel(%s, %s) failed: %s", telegram_id, channel_key, exc)
+        return False
+
+
+def get_merchant_publication_limit(telegram_id: int, *, multi_enabled: bool) -> int:
+    """Return max open publications allowed for merchant.
+
+    Rules:
+    - If multi is disabled: fixed limit = 1.
+    - If multi is enabled and explicit limit exists: use it.
+    - If multi is enabled and no explicit limit: use DEFAULT_MULTI_PUBLICATION_LIMIT.
+    """
+    if not multi_enabled:
+        return 1
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT permission
+                FROM user_permissions
+                WHERE telegram_id = ?
+                  AND permission LIKE ?
+                ORDER BY granted_at DESC
+                """,
+                (telegram_id, f"{MERCHANT_MAX_PUBLICATIONS_PREFIX}%"),
+            ).fetchall()
+        for row in rows:
+            permission = str(row[0] or "")
+            if not permission.startswith(MERCHANT_MAX_PUBLICATIONS_PREFIX):
+                continue
+            raw_limit = permission[len(MERCHANT_MAX_PUBLICATIONS_PREFIX):].strip()
+            try:
+                parsed = int(raw_limit)
+            except Exception:
+                continue
+            if parsed >= 1:
+                return parsed
+    except sqlite3.Error as exc:
+        logger.error("get_merchant_publication_limit(%s) failed: %s", telegram_id, exc)
+    return DEFAULT_MULTI_PUBLICATION_LIMIT
+
+
+def set_merchant_publication_limit(
+    telegram_id: int,
+    max_publications: int,
+    granted_by: int | None = None,
+) -> bool:
+    """Set explicit max open publications for merchant using permission key storage."""
+    try:
+        value = int(max_publications)
+    except Exception:
+        return False
+    if value < 1:
+        return False
+
+    permission = f"{MERCHANT_MAX_PUBLICATIONS_PREFIX}{value}"
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM user_permissions
+                WHERE telegram_id = ?
+                  AND permission LIKE ?
+                """,
+                (telegram_id, f"{MERCHANT_MAX_PUBLICATIONS_PREFIX}%"),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_permissions
+                    (telegram_id, permission, granted_by)
+                VALUES (?, ?, ?)
+                """,
+                (telegram_id, permission, granted_by),
+            )
+            conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("set_merchant_publication_limit(%s, %s) failed: %s", telegram_id, value, exc)
         return False
 
 
