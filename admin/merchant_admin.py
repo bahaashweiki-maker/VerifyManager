@@ -13,15 +13,22 @@ Current scope:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatMemberStatus
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from admin.admin import admin_panel
+from config.user_permissions import USER_PERMISSIONS
+from database.database import get_connection
 from repositories.merchant_channels_repository import (
     create_channel,
     deactivate_channel,
     get_channel_by_id,
+    get_channel_join_url,
+    get_channel_membership_chat_ref,
     list_channels,
 )
 from repositories.merchant_publication_repository import (
@@ -35,6 +42,8 @@ from repositories.merchant_publication_repository import (
     set_merchant_hourly_publish,
 )
 from services.merchant_service import list_merchant_profiles
+from services.permission_service import grant_permission, revoke_permission
+from services.verified_users_service import get_user_general_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,12 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _show_main_menu(update, context)
     if data == "MERCHANT_ADM_CHANNELS":
         return await _show_channels(update, context)
+    if data == "MERCHANT_ADM_CHANNEL_HEALTH":
+        return await _show_channel_integrity(update, context)
+    if data == "MERCHANT_ADM_HEALTH":
+        return await _show_merchants_health(update, context)
+    if data == "MERCHANT_ADM_TRIAGE":
+        return await _show_merchants_triage(update, context)
     if data == "MERCHANT_ADM_CHANNEL_ADD":
         return await _prompt_add_channel(update, context)
     if data.startswith("MERCHANT_ADM_CHANNEL_VIEW_"):
@@ -62,6 +77,16 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _show_merchants(update, context)
     if data.startswith("MERCHANT_ADM_VIEW_"):
         return await _show_merchant(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_PERMS_"):
+        return await _show_merchant_permissions(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_STATS_"):
+        return await _show_merchant_publication_stats(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_HEALTH_VIEW_"):
+        return await _show_merchant_health_details(update, context, int(data.rsplit("_", 1)[1]))
+    if data.startswith("MERCHANT_ADM_PERM_TOGGLE_"):
+        raw = data.removeprefix("MERCHANT_ADM_PERM_TOGGLE_")
+        telegram_id_raw, permission_key = raw.split("|", 1)
+        return await _toggle_merchant_permission(update, context, int(telegram_id_raw), permission_key)
     if data.startswith("MERCHANT_ADM_HOURLY_"):
         return await _toggle_hourly(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_ASSIGN_"):
@@ -126,8 +151,201 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "🏪 <b>ניהול סוחרים ופרסום</b>\n\nבחר פעולה:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("👤 ניהול סוחרים", callback_data="MERCHANT_ADM_LIST")],
+            [InlineKeyboardButton("🧭 דורש טיפול עכשיו", callback_data="MERCHANT_ADM_TRIAGE")],
+            [InlineKeyboardButton("🩺 בריאות סוחרים", callback_data="MERCHANT_ADM_HEALTH")],
             [InlineKeyboardButton("📡 ערוצים מורשים", callback_data="MERCHANT_ADM_CHANNELS")],
             [InlineKeyboardButton("🔙 חזרה", callback_data="ADMIN_PANEL")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _resolve_required_join_status_for_channel(
+    bot,
+    merchant_telegram_id: int,
+    channel: dict,
+) -> str:
+    chat_ref = get_channel_membership_chat_ref(channel)
+    if not chat_ref:
+        return "unknown"
+    try:
+        member = await bot.get_chat_member(chat_id=chat_ref, user_id=merchant_telegram_id)
+        if member.status in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED}:
+            return "missing"
+        return "joined"
+    except TelegramError as exc:
+        message = str(exc).lower()
+        if any(token in message for token in (
+            "user not found",
+            "participant_id_invalid",
+            "chat not found",
+            "user not participant",
+            "user_id_invalid",
+        )):
+            return "missing"
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+
+async def _compute_merchant_join_health(
+    bot,
+    merchant_telegram_id: int,
+    by_key: dict[str, dict],
+) -> dict:
+    required_keys = [k for k in list_merchant_required_channels(merchant_telegram_id) if k in by_key]
+    if not required_keys:
+        return {
+            "status": "none",
+            "required_count": 0,
+            "missing_count": 0,
+            "unknown_count": 0,
+            "channel_items": [],
+        }
+
+    channel_items: list[dict] = []
+    missing_count = 0
+    unknown_count = 0
+    for key in required_keys:
+        channel = by_key[key]
+        status = await _resolve_required_join_status_for_channel(bot, merchant_telegram_id, channel)
+        if status == "missing":
+            missing_count += 1
+        elif status == "unknown":
+            unknown_count += 1
+        channel_items.append({"channel": channel, "status": status})
+
+    if missing_count > 0:
+        status_key = "blocked"
+    elif unknown_count > 0:
+        status_key = "warning"
+    else:
+        status_key = "open"
+
+    return {
+        "status": status_key,
+        "required_count": len(required_keys),
+        "missing_count": missing_count,
+        "unknown_count": unknown_count,
+        "channel_items": channel_items,
+    }
+
+
+def _health_status_label(status_key: str) -> str:
+    labels = {
+        "open": "✅ פתוח לפרסום",
+        "blocked": "⛔ חסום (חסר הצטרפות)",
+        "warning": "⚠️ פתוח עם אימות חלקי",
+        "none": "➖ ללא ערוצי חובה",
+    }
+    return labels.get(status_key, status_key)
+
+
+async def _show_merchants_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_state(context)
+    merchants = list_merchant_profiles()
+    channels = list_channels(active_only=True)
+    by_key = {str(c.get("channel_key") or ""): c for c in channels}
+
+    rows: list[list[InlineKeyboardButton]] = []
+    blocked_total = 0
+    warning_total = 0
+    open_total = 0
+    none_total = 0
+    merchant_rows: list[tuple[int, str, str, int]] = []
+
+    for merchant in merchants:
+        telegram_id = int(merchant["telegram_id"])
+        health = await _compute_merchant_join_health(context.bot, telegram_id, by_key)
+        status_key = str(health["status"])
+        if status_key == "blocked":
+            blocked_total += 1
+            icon = "⛔"
+        elif status_key == "warning":
+            warning_total += 1
+            icon = "⚠️"
+        elif status_key == "open":
+            open_total += 1
+            icon = "✅"
+        else:
+            none_total += 1
+            icon = "➖"
+
+        status_rank = {"blocked": 0, "warning": 1, "open": 2, "none": 3}.get(status_key, 9)
+        merchant_rows.append((status_rank, str(merchant["display_name"]).lower(), f"{icon} {merchant['display_name']}", telegram_id))
+
+    merchant_rows.sort(key=lambda item: (item[0], item[1]))
+    for _, __, title, telegram_id in merchant_rows:
+        rows.append([
+            InlineKeyboardButton(
+                title,
+                callback_data=f"MERCHANT_ADM_HEALTH_VIEW_{telegram_id}",
+            )
+        ])
+
+    rows.append([InlineKeyboardButton("🔙 חזרה", callback_data="MERCHANT_ADM_BACK")])
+
+    await update.callback_query.edit_message_text(
+        (
+            "🩺 <b>בריאות סוחרים - חובת הצטרפות</b>\n\n"
+            f"סה\"כ סוחרים: <b>{len(merchants)}</b>\n"
+            f"✅ פתוחים: <b>{open_total}</b>\n"
+            f"⛔ חסומים: <b>{blocked_total}</b>\n"
+            f"⚠️ אימות חלקי: <b>{warning_total}</b>\n"
+            f"➖ ללא חובת הצטרפות: <b>{none_total}</b>\n\n"
+            "לחץ על סוחר לפירוט מלא."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _show_merchant_health_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+) -> None:
+    _clear_state(context)
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants_health(update, context)
+
+    channels = list_channels(active_only=True)
+    by_key = {str(c.get("channel_key") or ""): c for c in channels}
+    health = await _compute_merchant_join_health(context.bot, telegram_id, by_key)
+
+    lines = []
+    for item in health["channel_items"]:
+        channel = item["channel"]
+        status = item["status"]
+        if status == "joined":
+            mark = "✅"
+        elif status == "missing":
+            mark = "❌"
+        else:
+            mark = "⚠️"
+        membership_ref = get_channel_membership_chat_ref(channel)
+        lines.append(f"{mark} {channel['display_name']} ({membership_ref or 'ללא מזהה בדיקה'})")
+
+    if not lines:
+        lines.append("אין ערוצי חובה לסוחר זה.")
+
+    await update.callback_query.edit_message_text(
+        (
+            f"🩺 <b>בריאות סוחר</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            f"🆔 <code>{telegram_id}</code>\n"
+            f"סטטוס: <b>{_health_status_label(str(health['status']))}</b>\n\n"
+            f"🔐 ערוצי חובה: <b>{health['required_count']}</b>\n"
+            f"❌ חסרים: <b>{health['missing_count']}</b>\n"
+            f"⚠️ לא מאומתים אוטומטית: <b>{health['unknown_count']}</b>\n\n"
+            + "\n".join(lines)
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📞 פתח שיחה עם הסוחר", url=f"tg://user?id={telegram_id}")],
+            [InlineKeyboardButton("🔐 עריכת חובת הצטרפות", callback_data=f"MERCHANT_ADM_REQUIRED_{telegram_id}")],
+            [InlineKeyboardButton("🔙 חזרה לבריאות סוחרים", callback_data="MERCHANT_ADM_HEALTH")],
         ]),
         parse_mode="HTML",
     )
@@ -146,6 +364,7 @@ async def _show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             InlineKeyboardButton("🗑", callback_data=f"MERCHANT_ADM_CHANNEL_DEL_{channel['id']}")
         ])
     rows.append([InlineKeyboardButton("➕ הוסף ערוץ", callback_data="MERCHANT_ADM_CHANNEL_ADD")])
+    rows.append([InlineKeyboardButton("🧪 בדיקת תקינות ערוצים", callback_data="MERCHANT_ADM_CHANNEL_HEALTH")])
     rows.append([InlineKeyboardButton("🔙 חזרה", callback_data="MERCHANT_ADM_BACK")])
 
     text = f"📡 <b>ערוצים מורשים</b> ({len(channels)})\n\n"
@@ -253,6 +472,7 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
 
     hourly = merchant_has_hourly_publish(telegram_id)
     hourly_label = "פעיל" if hourly else "כבוי"
+    stats_24h = _merchant_publication_metrics_24h(telegram_id)
 
     await update.callback_query.edit_message_text(
         (
@@ -261,15 +481,262 @@ async def _show_merchant(update: Update, context: ContextTypes.DEFAULT_TYPE, tel
             f"⏱️ פרסום כל שעה: <b>{hourly_label}</b>\n"
             f"📡 ערוצי פרסום: <b>{len(channels)}</b>\n"
             f"🔐 ערוצי חובה: <b>{len(required_channels)}</b>\n\n"
+            f"📨 נשלח ב-24ש: <b>{stats_24h['sent_24h']}</b> | ❌ נכשל ב-24ש: <b>{stats_24h['failed_24h']}</b>\n"
+            f"🗂️ פרסומים שמורים: <b>{stats_24h['saved_count']}</b> | 🟢 פעילים: <b>{stats_24h['active_count']}</b>\n\n"
             f"📡 משויך לפרסום: <b>{_format_channel_list(channels)}</b>\n"
             f"🔐 חובת הצטרפות: <b>{_format_channel_list(required_channels)}</b>"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 שיוך ערוצים", callback_data=f"MERCHANT_ADM_ASSIGN_{telegram_id}")],
             [InlineKeyboardButton("🔐 חובת הצטרפות", callback_data=f"MERCHANT_ADM_REQUIRED_{telegram_id}")],
+            [InlineKeyboardButton("🔑 הרשאות סוחר", callback_data=f"MERCHANT_ADM_PERMS_{telegram_id}")],
+            [InlineKeyboardButton("📊 נתוני פרסום 24 שעות", callback_data=f"MERCHANT_ADM_STATS_{telegram_id}")],
             [InlineKeyboardButton("⏱️ הפעל/כבה כל שעה", callback_data=f"MERCHANT_ADM_HOURLY_{telegram_id}")],
             [InlineKeyboardButton("🔙 חזרה לסוחרים", callback_data="MERCHANT_ADM_LIST")],
         ]),
+        parse_mode="HTML",
+    )
+
+
+def _merchant_permission_items() -> list[dict]:
+    items: list[dict] = []
+    for item in USER_PERMISSIONS:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        if key.startswith("user.merchant.") or key.startswith("user.media.") or key in {
+            "user.publish.multi",
+            "user.review.write",
+            "user.review.reply",
+        }:
+            items.append({"key": key, "label": str(item.get("label") or key)})
+    return items
+
+
+def _format_dt_short(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            return dt.strftime("%d/%m %H:%M")
+        except Exception:
+            continue
+    return text
+
+
+def _merchant_publication_metrics_24h(telegram_id: int) -> dict:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN s.event_key = 'sent' THEN 1 ELSE 0 END), 0) AS sent_24h,
+                COALESCE(SUM(CASE WHEN s.event_key = 'failed' THEN 1 ELSE 0 END), 0) AS failed_24h,
+                COALESCE(COUNT(DISTINCT p.id), 0) AS saved_count,
+                COALESCE(SUM(CASE WHEN p.status = 'active' THEN 1 ELSE 0 END), 0) AS active_count,
+                MAX(p.last_sent_at) AS last_sent_at
+            FROM subscriber_publications p
+            LEFT JOIN subscriber_publication_stats s
+              ON s.publication_id = p.id
+             AND s.created_at >= datetime('now', '-1 day')
+            WHERE p.created_by = ?
+              AND p.target_type = 'chat_list'
+            """,
+            (telegram_id,),
+        ).fetchone()
+    return {
+        "sent_24h": int((row[0] or 0) if row else 0),
+        "failed_24h": int((row[1] or 0) if row else 0),
+        "saved_count": int((row[2] or 0) if row else 0),
+        "active_count": int((row[3] or 0) if row else 0),
+        "last_sent_at": str((row[4] or "") if row else "").strip(),
+    }
+
+
+async def _show_merchant_permissions(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+) -> None:
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants(update, context)
+
+    current = set(get_user_general_permissions(telegram_id))
+    rows: list[list[InlineKeyboardButton]] = []
+    enabled_count = 0
+    permission_items = _merchant_permission_items()
+    for item in permission_items:
+        key = item["key"]
+        mark = "✅" if key in current else "⬜"
+        if key in current:
+            enabled_count += 1
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {item['label']}",
+                callback_data=f"MERCHANT_ADM_PERM_TOGGLE_{telegram_id}|{key}",
+            )
+        ])
+
+    rows.append([InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")])
+
+    await update.callback_query.edit_message_text(
+        (
+            "🔑 <b>הרשאות סוחר</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            f"🆔 <code>{telegram_id}</code>\n"
+            f"פעילות: <b>{enabled_count}</b> מתוך <b>{len(permission_items)}</b>\n\n"
+            "כולל הרשאת <b>פרסומים מרובים במקביל</b> עבור הרחבת פרסום לשלב הבא."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+async def _toggle_merchant_permission(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+    permission_key: str,
+) -> None:
+    key = str(permission_key or "").strip()
+    allowed_keys = {item["key"] for item in _merchant_permission_items()}
+    if key not in allowed_keys:
+        await update.callback_query.answer("⚠️ הרשאה לא נתמכת במסך זה", show_alert=True)
+        return await _show_merchant_permissions(update, context, telegram_id)
+
+    current = set(get_user_general_permissions(telegram_id))
+    if key in current:
+        ok = revoke_permission(telegram_id, key)
+    else:
+        ok = grant_permission(telegram_id, key, granted_by=update.callback_query.from_user.id)
+
+    await update.callback_query.answer("✅ נשמר" if ok else "❌ שגיאה", show_alert=not ok)
+    await _show_merchant_permissions(update, context, telegram_id)
+
+
+async def _show_merchant_publication_stats(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    telegram_id: int,
+) -> None:
+    merchant = _get_merchant_or_none(telegram_id)
+    if merchant is None:
+        await update.callback_query.answer("⚠️ סוחר לא נמצא", show_alert=True)
+        return await _show_merchants(update, context)
+
+    metrics = _merchant_publication_metrics_24h(telegram_id)
+    await update.callback_query.edit_message_text(
+        (
+            "📊 <b>נתוני פרסום - 24 שעות אחרונות</b>\n\n"
+            f"סוחר: <b>{merchant['display_name']}</b>\n"
+            f"🆔 <code>{telegram_id}</code>\n\n"
+            f"📨 נשלח בהצלחה: <b>{metrics['sent_24h']}</b>\n"
+            f"❌ שליחות שנכשלו: <b>{metrics['failed_24h']}</b>\n"
+            f"🗂️ פרסומים שמורים: <b>{metrics['saved_count']}</b>\n"
+            f"🟢 פרסומים פעילים: <b>{metrics['active_count']}</b>\n"
+            f"🕓 שליחה אחרונה: <b>{_format_dt_short(metrics['last_sent_at'])}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 חזרה לסוחר", callback_data=f"MERCHANT_ADM_VIEW_{telegram_id}")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_channel_integrity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_state(context)
+    channels = list_channels(active_only=True)
+    ok_count = 0
+    warn_count = 0
+    broken_count = 0
+    lines: list[str] = []
+
+    for channel in channels:
+        display = str(channel.get("display_name") or channel.get("channel_key") or "")
+        join_url = get_channel_join_url(channel)
+        membership_ref = get_channel_membership_chat_ref(channel)
+        if membership_ref and (membership_ref.startswith("@") or membership_ref.startswith("-100")):
+            ok_count += 1
+            lines.append(f"✅ {display} | בדיקה: {membership_ref}")
+            continue
+        if join_url:
+            warn_count += 1
+            lines.append(f"⚠️ {display} | יש קישור הצטרפות אבל חסר מזהה בדיקה (@ / -100)")
+            continue
+        broken_count += 1
+        lines.append(f"❌ {display} | ערוץ לא תקין: חסר גם קישור וגם מזהה בדיקה")
+
+    preview = "\n".join(lines[:25]) if lines else "אין ערוצים פעילים."
+    if len(lines) > 25:
+        preview += f"\n... ועוד {len(lines) - 25}"
+
+    await update.callback_query.edit_message_text(
+        (
+            "🧪 <b>בדיקת תקינות ערוצים</b>\n\n"
+            f"סה\"כ: <b>{len(channels)}</b>\n"
+            f"✅ תקינים לאימות: <b>{ok_count}</b>\n"
+            f"⚠️ אימות חלקי: <b>{warn_count}</b>\n"
+            f"❌ שבורים: <b>{broken_count}</b>\n\n"
+            "כדי אימות חובת הצטרפות מלא, לכל ערוץ חובה צריך מזהה בדיקה: @username או -100...\n\n"
+            + preview
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ חזרה לערוצים", callback_data="MERCHANT_ADM_CHANNELS")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_merchants_triage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_state(context)
+    merchants = list_merchant_profiles()
+    channels = list_channels(active_only=True)
+    by_key = {str(c.get("channel_key") or ""): c for c in channels}
+
+    rows: list[list[InlineKeyboardButton]] = []
+    items: list[tuple[int, str, str, int]] = []
+
+    for merchant in merchants:
+        telegram_id = int(merchant["telegram_id"])
+        health = await _compute_merchant_join_health(context.bot, telegram_id, by_key)
+        metrics = _merchant_publication_metrics_24h(telegram_id)
+
+        status = str(health["status"])
+        failed_24h = int(metrics["failed_24h"])
+        if status == "blocked":
+            priority = 0
+            label = f"⛔ {merchant['display_name']} | חסום"
+        elif failed_24h > 0:
+            priority = 1
+            label = f"❌ {merchant['display_name']} | {failed_24h} כשלונות ב-24ש"
+        elif status == "warning":
+            priority = 2
+            label = f"⚠️ {merchant['display_name']} | אימות חלקי"
+        else:
+            continue
+
+        items.append((priority, str(merchant["display_name"]).lower(), label, telegram_id))
+
+    items.sort(key=lambda row: (row[0], row[1]))
+    for _, __, label, telegram_id in items:
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"MERCHANT_ADM_HEALTH_VIEW_{telegram_id}"),
+            InlineKeyboardButton("📞", url=f"tg://user?id={telegram_id}"),
+        ])
+
+    if not rows:
+        rows.append([InlineKeyboardButton("✅ אין כרגע סוחרים שדורשים טיפול", callback_data="IGNORE")])
+    rows.append([InlineKeyboardButton("🔙 חזרה", callback_data="MERCHANT_ADM_BACK")])
+
+    await update.callback_query.edit_message_text(
+        (
+            "🧭 <b>דורש טיפול עכשיו</b>\n\n"
+            "מציג קודם כל חסימות הצטרפות, אחר כך כשלונות שליחה, ואז אימות חלקי."
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML",
     )
 
