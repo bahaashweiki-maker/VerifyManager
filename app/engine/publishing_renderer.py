@@ -260,14 +260,16 @@ def _channel_ref_tokens_from_records(channel_records: list[dict]) -> set[str]:
 def _publication_mode_by_refs(pub: dict, regular_refs: set[str], multi_refs: set[str]) -> str:
     ref_values = set(_parse_chat_refs_from_target_value(pub.get("target_value")))
     if not ref_values:
-        return "regular"
+        return "unknown"
     in_regular = any(ref in regular_refs for ref in ref_values)
     in_multi = any(ref in multi_refs for ref in ref_values)
-    if in_multi and not in_regular:
+    # Prefer multi when there is overlap, so merchant-facing UI remains explicit
+    # and avoids a confusing "unknown" label for legacy mixed assignments.
+    if in_multi:
         return "multi"
     if in_regular and not in_multi:
         return "regular"
-    return "regular"
+    return "unknown"
 
 
 def _resolve_publication_mode_for_merchant(pub: dict, merchant_id: int) -> str:
@@ -282,7 +284,9 @@ def _resolve_publication_mode_for_merchant(pub: dict, merchant_id: int) -> str:
 
 
 def _publication_mode_label(publication_mode: str) -> str:
-    return "מרובה" if publication_mode == "multi" else "רגיל"
+    if publication_mode == "multi":
+        return "מרובה"
+    return "רגיל" if publication_mode == "regular" else "מרובה"
 
 
 def _next_hour_from_now(now: datetime) -> datetime:
@@ -582,7 +586,10 @@ async def _show_merchant_publication_list(
             title = _merchant_publication_display_title(pub, pid)
             publication_mode = _publication_mode_from_title(pub.get("title")) or _publication_mode_by_refs(pub, regular_refs, multi_refs)
             mode_label = _publication_mode_label(publication_mode)
-            mode_icon = "🧩" if publication_mode == "multi" else "📄"
+            if publication_mode == "regular":
+                mode_icon = "📄"
+            else:
+                mode_icon = "🧩"
             next_run = _merchant_next_run_display(pub)
             meta = _merchant_publication_meta(pub)
             lines.append(
@@ -2348,10 +2355,19 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             context.user_data.pop(_MERCHANT_REQUIRED_JOIN_LAST_STATE_KEY, None)
 
-        if sub_action in {"compose", "newpub", "start", "startcompose", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly", "cancelinput"}:
-            if not _merchant_feature_allowed(capability_flags, "user.merchant.start"):
-                await bot.send_message(chat_id, "⛔ אין לך הרשאה: התחל פרסום.")
-                return
+        publish_flow_actions = {
+            "compose", "newpub", "start", "startcompose", "pickch", "startconfirm", "settext", "setmedia", "preview", "sendnow", "sendhourly", "cancelinput"
+        }
+        if sub_action in publish_flow_actions:
+            is_multi_context = sub_action == "newpub" or current_mode == "multi"
+            if is_multi_context:
+                if not capability_flags.get("user.publish.multi"):
+                    await bot.send_message(chat_id, "⛔ אין לך הרשאה: פרסום מרובה.")
+                    return
+            else:
+                if not _merchant_feature_allowed(capability_flags, "user.merchant.start"):
+                    await bot.send_message(chat_id, "⛔ אין לך הרשאה: התחל פרסום.")
+                    return
 
         if sub_action in {"mypubs", "pubview", "pubpreview", "pubedit", "pubrun", "pubhourly", "pubstop", "pubdel"}:
             if not _merchant_feature_allowed(capability_flags, "user.merchant.publications"):
@@ -2696,10 +2712,16 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if missing_required:
                 await _send_required_channels_gate(bot, chat_id, required_statuses)
                 return
-            if not can_start_publication:
+            can_open_publication_flow = bool(capability_flags.get("user.publish.multi")) if current_mode == "multi" else can_start_publication
+            if not can_open_publication_flow:
+                message = (
+                    "⛔ אין לך הרשאה לפתוח פרסום מרובה כרגע."
+                    if current_mode == "multi"
+                    else "⛔ אין לך עדיין הרשאות מלאות להתחלת פרסום.\nנדרשות לפחות הרשאת יצירת פרסום והרשאת מדיה."
+                )
                 await bot.send_message(
                     chat_id,
-                    "⛔ אין לך עדיין הרשאות מלאות להתחלת פרסום.\nנדרשות לפחות הרשאת יצירת פרסום והרשאת מדיה.",
+                    message,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
                     ]),
@@ -2857,6 +2879,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             schedule_rows: list[list[InlineKeyboardButton]] = []
             if capability_flags.get("user.merchant.start"):
                 schedule_rows.append([InlineKeyboardButton("🧾 פתח יצירת פרסום", callback_data="pub:user:merchant:compose")])
+            if capability_flags.get("user.publish.multi"):
+                schedule_rows.append([InlineKeyboardButton("🧩 פתח פרסום מרובה", callback_data="pub:user:merchant:newpub")])
             if capability_flags.get("user.merchant.publications"):
                 schedule_rows.append([InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")])
             schedule_rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
@@ -2912,8 +2936,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         menu_rows = []
         if capability_flags.get("user.merchant.start") and can_start_publication and not missing_required:
             menu_rows.append([InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")])
-            if capability_flags.get("user.publish.multi"):
-                menu_rows.append([InlineKeyboardButton("🧩 פרסום נוסף (מרובה)", callback_data="pub:user:merchant:newpub")])
+        if capability_flags.get("user.publish.multi") and not missing_required:
+            menu_rows.append([InlineKeyboardButton("🧩 פרסום נוסף (מרובה)", callback_data="pub:user:merchant:newpub")])
         if capability_flags.get("user.merchant.schedule") and not missing_required:
             menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
         if capability_flags.get("user.review.write"):
