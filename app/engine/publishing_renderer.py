@@ -871,9 +871,8 @@ async def _show_merchant_publication_list(
     rows: list[list[InlineKeyboardButton]] = []
     lines = [
         "🗂️ <b>הפרסומים שלי</b>",
-        "",
         f"🧮 מכסה: <b>{max_open}</b> | בשימוש: <b>{used_open}</b> | נותר: <b>{remaining_open}</b>",
-        "📌 סוג פרסום: [רגיל] או [מרובה]",
+        "📌 סוגים: 📄 רגיל | 🧩 <b>מרובה</b>",
         "",
     ]
     if not rows_data:
@@ -887,15 +886,21 @@ async def _show_merchant_publication_list(
             mode_label = _publication_mode_label(publication_mode)
             if publication_mode == "regular":
                 mode_icon = "📄"
+                mode_text = "📄 רגיל"
             else:
                 mode_icon = "🧩"
+                mode_text = "🧩 <b>מרובה</b>"
             next_run = _merchant_next_run_display(pub)
             meta = _merchant_publication_meta(pub)
-            lines.append(
-                f"{index}. <b>[{mode_label}] {title}</b> | מצב: {status}"
-                + (f" | עודכן: {meta}" if meta else "")
-                + (f" | הבא: {next_run}" if next_run else "")
-            )
+            details = [f"מצב: <b>{status}</b>"]
+            if meta:
+                details.append(f"עודכן: <b>{meta}</b>")
+            if next_run:
+                details.append(f"הבא: <b>{next_run}</b>")
+            lines.append(f"{index}. {mode_text} | <b>{title}</b>")
+            lines.append(" | ".join(details))
+            if index < len(rows_data):
+                lines.append("")
             button_title = (title[:18] + "...") if len(title) > 18 else title
             rows.append([InlineKeyboardButton(f"{mode_icon} {mode_label} | {button_title}", callback_data=f"pub:user:merchant:pubview:{pid}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
