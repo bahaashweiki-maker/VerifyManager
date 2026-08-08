@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS merchant_reviews (
     reviewer_id     INTEGER NOT NULL,
     reviewer_name   TEXT,
     review_text     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    response_text   TEXT,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -48,8 +50,18 @@ def init_merchant_publication_db() -> bool:
     try:
         with get_connection() as conn:
             conn.executescript(_SCHEMA_SQL)
+            _ensure_review_columns(conn)
         logger.info("merchant_publication_db initialized")
         return True
     except sqlite3.Error as exc:
         logger.critical("init_merchant_publication_db failed: %s", exc, exc_info=True)
         return False
+
+
+def _ensure_review_columns(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("PRAGMA table_info(merchant_reviews)").fetchall()
+    existing = {str(row[1]) for row in rows}
+    if "status" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+    if "response_text" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN response_text TEXT")
