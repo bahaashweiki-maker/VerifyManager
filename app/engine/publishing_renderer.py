@@ -58,6 +58,7 @@ from services.merchant_service import (
     list_merchant_multi_allowed_channel_records,
     list_merchant_required_channel_records,
 )
+from services.admin_service import get_all_admins
 from services.subscriber_publication_service import (
     count_open_creator_publications,
     create_publication_record,
@@ -999,6 +1000,57 @@ async def _notify_admin_required_join_completed(
         pass
 
 
+async def _notify_managers_new_review(
+    bot: Bot,
+    review_id: int,
+    merchant_id: int,
+    reviewer_id: int,
+    reviewer_name: str,
+    review_text: str,
+) -> None:
+    recipients: set[int] = set()
+    if ADMIN_ID > 0:
+        recipients.add(int(ADMIN_ID))
+    try:
+        recipients.update(int(admin_id) for admin_id in get_all_admins() if int(admin_id) > 0)
+    except Exception:
+        pass
+    if not recipients:
+        return
+
+    merchant = get_merchant_profile(merchant_id) or {}
+    merchant_name = str(merchant.get("display_name") or merchant_id)
+    preview = (review_text or "").strip()
+    if len(preview) > 180:
+        preview = preview[:180].rstrip() + "..."
+
+    text = (
+        "🚨 <b>התראת חוות דעת חדשה</b>\n\n"
+        "⏳ ממתינה לטיפול מנהל\n"
+        f"🆔 פנייה: <b>RV-{review_id}</b>\n"
+        f"👤 לקוח: <b>{reviewer_name or reviewer_id}</b> | <code>{reviewer_id}</code>\n"
+        f"🏪 סוחר: <b>{merchant_name}</b> | <code>{merchant_id}</code>\n"
+        f"🕒 זמן: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b>\n\n"
+        f"📝 תצוגה מקדימה:\n{preview or '-'}"
+    )
+
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ פתח ממתינים", callback_data="MERCHANT_ADM_REVIEWS_PENDING")],
+        [InlineKeyboardButton("🏪 ניהול סוחרים", callback_data="ADMIN_MERCHANTS")],
+    ])
+
+    for manager_id in recipients:
+        try:
+            await bot.send_message(
+                manager_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        except Exception:
+            continue
+
+
 async def _run_merchant_publication_send(
     bot: Bot,
     chat_id: int,
@@ -1258,23 +1310,63 @@ async def _show_public_reviews_list(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
     merchant_id: int,
+    page: int = 0,
 ) -> None:
     profile = get_merchant_profile(merchant_id)
     display_name = profile["display_name"] if profile else str(merchant_id)
-    reviews = list_merchant_reviews(merchant_id, limit=10)
-    count = count_merchant_reviews(merchant_id)
-    lines = [f"• {str(r.get('review_text') or '').strip()}" for r in reviews] if reviews else ["אין עדיין חוות דעת."]
+    all_reviews = list_merchant_reviews(merchant_id, limit=300)
+    reviews = [row for row in all_reviews if str(row.get("status") or "pending") == "approved"]
+    count = len(reviews)
+
+    if count <= 0:
+        await bot.send_message(
+            chat_id,
+            (
+                f"📖 <b>חוות דעת על {display_name}</b>\n\n"
+                "אין עדיין חוות דעת מאושרות להצגה."
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")],
+            ]),
+        )
+        return
+
+    page = max(0, min(page, count - 1))
+    review = reviews[page]
+    reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
+    review_text = str(review.get("review_text") or "-").strip() or "-"
+    created_raw = str(review.get("created_at") or "").strip()
+    created_at = created_raw or "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            created_at = datetime.strptime(created_raw, fmt).strftime("%d/%m/%Y %H:%M")
+            break
+        except Exception:
+            continue
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"pub:user:mrev:view:{merchant_id}:{page - 1}"))
+    if page < count - 1:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"pub:user:mrev:view:{merchant_id}:{page + 1}"))
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if nav_row:
+        rows.append(nav_row)
+    rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
+
     await bot.send_message(
         chat_id,
         (
             f"📖 <b>חוות דעת על {display_name}</b>\n\n"
-            f"סה\"כ חוות דעת: <b>{count}</b>\n\n"
-            + "\n".join(lines)
+            f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
+            f"👤 מגיש: <b>{reviewer_name}</b>\n"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
+            f"📝 תוכן הביקורת:\n{review_text}"
         ),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
@@ -1283,21 +1375,61 @@ async def _show_my_submitted_reviews(
     chat_id: int,
     reviewer_id: int,
     merchant_id: int,
+    page: int = 0,
 ) -> None:
-    rows = list_reviews_by_reviewer(reviewer_id, limit=10)
-    count = count_reviews_by_reviewer(reviewer_id)
-    lines = [f"• {str(item.get('review_text') or '').strip()}" for item in rows] if rows else ["לא נמצאו ביקורות שהגשת עדיין."]
+    all_rows = list_reviews_by_reviewer(reviewer_id, limit=300)
+    rows = [item for item in all_rows if int(item.get("merchant_id") or 0) == merchant_id]
+    count = len(rows)
+
+    if count <= 0:
+        await bot.send_message(
+            chat_id,
+            "🗂️ <b>הביקורות שאני הגשתי</b>\n\nלא נמצאו ביקורות שהגשת עדיין עבור סוחר זה.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")],
+            ]),
+        )
+        return
+
+    page = max(0, min(page, count - 1))
+    review = rows[page]
+    reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
+    review_text = str(review.get("review_text") or "-").strip() or "-"
+    status = str(review.get("status") or "pending")
+    status_label = {"pending": "ממתינה", "approved": "מאושרת", "rejected": "נדחתה"}.get(status, status)
+    created_raw = str(review.get("created_at") or "").strip()
+    created_at = created_raw or "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            created_at = datetime.strptime(created_raw, fmt).strftime("%d/%m/%Y %H:%M")
+            break
+        except Exception:
+            continue
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"pub:user:mrev:mine:{merchant_id}:{page - 1}"))
+    if page < count - 1:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"pub:user:mrev:mine:{merchant_id}:{page + 1}"))
+
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    if nav_row:
+        kb_rows.append(nav_row)
+    kb_rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
+
     await bot.send_message(
         chat_id,
         (
             "🗂️ <b>הביקורות שאני הגשתי</b>\n\n"
-            f"סה\"כ ביקורות: <b>{count}</b>\n\n"
-            + "\n".join(lines)
+            f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
+            f"📌 סטטוס: <b>{status_label}</b>\n"
+            f"👤 מגיש: <b>{reviewer_name}</b>\n"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
+            f"📝 תוכן הביקורת:\n{review_text}"
         ),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(kb_rows),
     )
 
 
@@ -2581,7 +2713,16 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             reviewer_name = query.from_user.full_name or query.from_user.username or str(query.from_user.id)
             structured_text = _compose_structured_review_text(ratings, free_text)
-            create_merchant_review(merchant_id, query.from_user.id, reviewer_name, structured_text)
+            review_id = create_merchant_review(merchant_id, query.from_user.id, reviewer_name, structured_text)
+            if review_id > 0:
+                await _notify_managers_new_review(
+                    bot,
+                    review_id,
+                    merchant_id,
+                    query.from_user.id,
+                    reviewer_name,
+                    free_text,
+                )
             context.user_data.pop(_MERCHANT_STATE_KEY, None)
             context.user_data.pop(_MERCHANT_REVIEW_TARGET_KEY, None)
             context.user_data.pop(_MERCHANT_REVIEW_RATING_KEY, None)
@@ -2596,10 +2737,12 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         if sub_action == "view":
-            await _show_public_reviews_list(bot, chat_id, context, merchant_id)
+            page = int(parts[5]) if len(parts) > 5 and str(parts[5]).isdigit() else 0
+            await _show_public_reviews_list(bot, chat_id, context, merchant_id, page=page)
             return
         if sub_action == "mine":
-            await _show_my_submitted_reviews(bot, chat_id, query.from_user.id, merchant_id)
+            page = int(parts[5]) if len(parts) > 5 and str(parts[5]).isdigit() else 0
+            await _show_my_submitted_reviews(bot, chat_id, query.from_user.id, merchant_id, page=page)
             return
         await _show_public_reviews(bot, chat_id, context, merchant_id)
         return

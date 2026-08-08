@@ -371,16 +371,24 @@ async def _notify_reviewer_after_decision(
     if reviewer_id <= 0:
         return
     if decision == "approved":
-        text = "✅ <b>חוות הדעת שלך אושרה</b>\n\nתודה על המשוב שלך."
+        text = (
+            "✅ <b>חוות הדעת אושרה בהצלחה</b>\n\n"
+            "תודה על המשוב שלך. חוות הדעת אושרה על ידי המנהל "
+            "וכעת זמינה להצגה בכרטיס הסוחר."
+        )
     else:
-        text = "❌ <b>חוות הדעת שלך נדחתה</b>\n\nתודה על הזמן שלך. ניתן לשלוח חוות דעת מעודכנת."
+        text = (
+            "❌ <b>חוות הדעת לא אושרה לפרסום</b>\n\n"
+            "חוות הדעת נבדקה על ידי המנהל ולא אושרה לפרסום. "
+            "תודה על ההבנה."
+        )
     try:
         await context.bot.send_message(
             reviewer_id,
             text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ חזרה לבוט ראשי", callback_data="pub:user:home")],
+                [InlineKeyboardButton("⬅️ חזור לבוט הראשי", callback_data="pub:user:home")],
             ]),
         )
     except Exception:
