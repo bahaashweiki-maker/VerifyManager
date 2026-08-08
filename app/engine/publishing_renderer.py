@@ -155,11 +155,56 @@ _MERCHANT_TITLE_MODE_REGULAR = "[REGULAR]"
 _MERCHANT_TITLE_MODE_MULTI = "[MULTI]"
 
 _REVIEW_QUESTIONS: list[tuple[str, str]] = [
-    ("experience", "איך הייתה חוויית הקנייה שלך?"),
-    ("quality", "איך היית מדרג את איכות המוצר?"),
-    ("trust", "איך היית מדרג את אמינות הסוחר?"),
-    ("recommend", "האם היית ממליץ על הסוחר לאחרים?"),
+    ("rating", "איך היית מדרג את חוויית השירות שלך?"),
+    ("product_quality", "📦 איך היית מגדיר את איכות הסחורה שקיבלת?"),
+    ("service_quality", "💬 איך היית מגדיר את איכות השירות שקיבלת מהסוחר?"),
+    ("attitude", "🤝 איך היית מגדיר את היחס והשירות שקיבלת?"),
+    ("speed", "⚡ איך היית מגדיר את מהירות השירות?"),
+    ("rebuy", "🔄 האם היית חוזר לרכוש מהסוחר?"),
+    ("bot_experience", "🤖 איך אתה מגדיר את חוויית הפעילות בבוט שלנו?\nהאם תמליץ עלינו לחברים?"),
 ]
+
+_REVIEW_PICK_OPTIONS: dict[str, list[tuple[str, str]]] = {
+    "product_quality": [
+        ("מצוינת", "⭐ מצוינת"),
+        ("טובה מאוד", "👍 טובה מאוד"),
+        ("טובה", "🙂 טובה"),
+        ("סבירה", "😐 סבירה"),
+        ("טעונה שיפור", "👎 טעונה שיפור"),
+    ],
+    "service_quality": [
+        ("מצוין", "⭐ מצוין"),
+        ("טוב מאוד", "👍 טוב מאוד"),
+        ("טוב", "🙂 טוב"),
+        ("סביר", "😐 סביר"),
+        ("טעון שיפור", "👎 טעון שיפור"),
+    ],
+    "attitude": [
+        ("אדיב ומקצועי", "😊 אדיב ומקצועי"),
+        ("שירות טוב", "👍 שירות טוב"),
+        ("יחס סביר", "🙂 יחס סביר"),
+        ("ניתן לשיפור", "😐 ניתן לשיפור"),
+        ("לא הייתי מרוצה", "👎 לא הייתי מרוצה"),
+    ],
+    "speed": [
+        ("מהיר מאוד", "🚀 מהיר מאוד"),
+        ("מהיר", "👍 מהיר"),
+        ("סביר", "🙂 סביר"),
+        ("איטי", "🐢 איטי"),
+        ("איטי מאוד", "❌ איטי מאוד"),
+    ],
+    "rebuy": [
+        ("כן", "✅ בהחלט"),
+        ("אולי", "🤔 אולי"),
+        ("לא", "❌ לא"),
+    ],
+    "bot_experience": [
+        ("כן", "✅ כן"),
+        ("בטח", "👍 בטח"),
+        ("בהחלט", "⭐ בהחלט"),
+        ("רצי", "💡 רצי"),
+    ],
+}
 
 _CONTACT_CATEGORIES: dict[str, str] = {
     "general": "💬 פנייה כללית",
@@ -196,28 +241,64 @@ def _review_stars(score: int) -> str:
 
 def _review_question_title(question_key: str) -> str:
     mapping = {
-        "experience": "חוויית קנייה",
-        "quality": "איכות מוצר",
-        "trust": "אמינות הסוחר",
-        "recommend": "המלצה על הסוחר",
+        "rating": "דירוג",
+        "product_quality": "איכות הסחורה",
+        "service_quality": "איכות השירות",
+        "attitude": "יחס ושירות",
+        "speed": "מהירות השירות",
+        "rebuy": "חזרה לרכישה",
+        "bot_experience": "חוויה בבוט והמלצה",
     }
     return mapping.get(question_key, question_key)
 
 
-def _empty_review_ratings() -> dict[str, int | None]:
+def _empty_review_ratings() -> dict[str, int | str | None]:
     return {key: None for key, _ in _REVIEW_QUESTIONS}
 
 
-def _compose_structured_review_text(ratings: dict[str, int | None], free_text: str) -> str:
+def _compose_structured_review_text(ratings: dict[str, int | str | None], free_text: str) -> str:
+    rating_score = int(ratings.get("rating") or 0)
+    rating_stars = _review_stars(rating_score) if rating_score > 0 else "-"
     lines = [
-        f"⭐ דירוג {_review_question_title('experience')}: {int(ratings.get('experience') or 0)}/5",
-        f"⭐ דירוג {_review_question_title('quality')}: {int(ratings.get('quality') or 0)}/5",
-        f"⭐ דירוג {_review_question_title('trust')}: {int(ratings.get('trust') or 0)}/5",
-        f"⭐ דירוג {_review_question_title('recommend')}: {int(ratings.get('recommend') or 0)}/5",
+        "⭐ חוות דעת על השירות",
+        "━━━━━━━━━━━━━━",
         "",
-        f"📝 חוות דעת: {free_text.strip() or '-'}",
+        "⭐ דירוג:",
+        f"{rating_stars}",
+        "",
+        "📦 איכות הסחורה:",
+        f"{str(ratings.get('product_quality') or '-')}",
+        "",
+        "💬 איכות השירות:",
+        f"{str(ratings.get('service_quality') or '-')}",
+        "",
+        "🤝 יחס ושירות:",
+        f"{str(ratings.get('attitude') or '-')}",
+        "",
+        "⚡ מהירות השירות:",
+        f"{str(ratings.get('speed') or '-')}",
+        "",
+        "🔄 חזרה לרכישה:",
+        f"{str(ratings.get('rebuy') or '-')}",
+        "",
+        "🤖 חוויית פעילות בבוט והמלצה:",
+        f"{str(ratings.get('bot_experience') or '-')}",
     ]
+    text = (free_text or "").strip()
+    if text:
+        lines.extend(["", "📝 חוות דעת הלקוח:", f"\"{text}\""])
+    lines.extend(["", "━━━━━━━━━━━━━━"])
     return "\n".join(lines)
+
+
+def _review_next_question_key(current_key: str) -> str | None:
+    keys = [key for key, _ in _REVIEW_QUESTIONS]
+    if current_key not in keys:
+        return None
+    idx = keys.index(current_key)
+    if idx >= len(keys) - 1:
+        return None
+    return keys[idx + 1]
 
 
 def _format_review_datetime(raw: str | None) -> str:
@@ -230,6 +311,40 @@ def _format_review_datetime(raw: str | None) -> str:
         except Exception:
             continue
     return text
+
+
+def _compact_review_body(review_text: str) -> str:
+    raw_lines = [str(line or "").strip() for line in str(review_text or "").splitlines()]
+    lines = [line for line in raw_lines if line and line != "━━━━━━━━━━━━━━" and line != "⭐ חוות דעת על השירות"]
+    if not lines:
+        return "-"
+
+    compact: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Merge "⭐ דירוג:" + "★★★☆☆" into one short line.
+        if line == "⭐ דירוג:" and i + 1 < len(lines):
+            stars = lines[i + 1]
+            if all(ch in "★☆" for ch in stars):
+                score = stars.count("★")
+                compact.append(f"⭐ דירוג: {score}/5 | {stars}")
+                i += 2
+                continue
+
+        # Merge label line ending with ':' with its next value line.
+        if line.endswith(":") and i + 1 < len(lines):
+            next_line = lines[i + 1]
+            if not next_line.endswith(":"):
+                compact.append(f"{line} {next_line}")
+                i += 2
+                continue
+
+        compact.append(line)
+        i += 1
+
+    return "\n".join(compact) if compact else "-"
 
 
 def _merchant_reply_status_label(status: str | None) -> str:
@@ -247,31 +362,50 @@ async def _prompt_review_rating(
     merchant_id: int,
     question_index: int = 0,
 ) -> None:
-    question_index = max(0, min(question_index, len(_REVIEW_QUESTIONS) - 1))
-    question_key, question_text = _REVIEW_QUESTIONS[question_index]
+    question_key = "rating"
     await bot.send_message(
         chat_id,
         (
-            "⭐ <b>הגשת חוות דעת</b>\n\n"
-            "נשמח לחוות דעת עניינית ומכבדת.\n"
-            f"שלב {question_index + 1} מתוך {len(_REVIEW_QUESTIONS) + 1}:\n"
-            f"<b>{question_text}</b>\n\n"
-            "בחר דירוג בין 1 ל-5 כוכבים."
+            "⭐ <b>חוות דעת על השירות</b>\n\n"
+            "החוויה שלך חשובה לנו.\n"
+            "הדירוג שלך עוזר לנו לשמור על רמת שירות גבוהה\n"
+            "ולהמשיך להשתפר.\n\n"
+            "איך היית מדרג את חוויית השירות שלך?\n\n"
+            "בחר דירוג:"
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("⭐ 1", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:1"),
-                InlineKeyboardButton("⭐⭐ 2", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:2"),
-            ],
-            [
-                InlineKeyboardButton("⭐⭐⭐ 3", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:3"),
-                InlineKeyboardButton("⭐⭐⭐⭐ 4", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:4"),
-            ],
-            [InlineKeyboardButton("⭐⭐⭐⭐⭐ 5", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:5")],
+            [InlineKeyboardButton("⭐", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:1")],
+            [InlineKeyboardButton("⭐⭐", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:2")],
+            [InlineKeyboardButton("⭐⭐⭐", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:3")],
+            [InlineKeyboardButton("⭐⭐⭐⭐", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:4")],
+            [InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data=f"pub:user:mrev:rate:{merchant_id}:{question_key}:5")],
             [InlineKeyboardButton("❌ ביטול הגשה", callback_data=f"pub:user:mrev:cancel:{merchant_id}")],
             [InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")],
         ]),
+    )
+
+
+async def _prompt_review_pick(
+    bot: Bot,
+    chat_id: int,
+    merchant_id: int,
+    question_key: str,
+) -> None:
+    options = _REVIEW_PICK_OPTIONS.get(question_key) or []
+    if not options:
+        return
+    question_text = dict(_REVIEW_QUESTIONS).get(question_key, question_key)
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"pub:user:mrev:pick:{merchant_id}:{question_key}:{idx}")]
+        for idx, (_, label) in enumerate(options)
+    ]
+    rows.append([InlineKeyboardButton("❌ ביטול הגשה", callback_data=f"pub:user:mrev:cancel:{merchant_id}")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
+    await bot.send_message(
+        chat_id,
+        question_text,
+        reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
@@ -279,23 +413,18 @@ async def _prompt_review_free_text(
     bot: Bot,
     chat_id: int,
     merchant_id: int,
-    ratings: dict[str, int | None],
+    ratings: dict[str, int | str | None],
 ) -> None:
-    summary_lines: list[str] = []
-    for key, _ in _REVIEW_QUESTIONS:
-        score = int(ratings.get(key) or 0)
-        summary_lines.append(f"• {_review_question_title(key)}: {_review_stars(score)} ({score}/5)")
     await bot.send_message(
         chat_id,
         (
-            "📝 <b>שלב אחרון - כתיבה חופשית</b>\n\n"
-            "זה הסיכום שבחרת עד עכשיו:\n"
-            + "\n".join(summary_lines)
-            + "\n\nכתוב עכשיו בכנות איך הייתה הקנייה ומה חשוב לדעת."
+            "📝 <b>יש משהו נוסף שתרצה לשתף?</b>\n\n"
+            "אפשר לכתוב כאן את דעתך האישית על השירות.\n"
+            "אפשר גם לדלג."
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 שינוי דירוגים", callback_data=f"pub:user:mrev:submit:{merchant_id}")],
+            [InlineKeyboardButton("⏭️ דלג", callback_data=f"pub:user:mrev:skiptext:{merchant_id}")],
             [InlineKeyboardButton("❌ ביטול הגשה", callback_data=f"pub:user:mrev:cancel:{merchant_id}")],
         ]),
     )
@@ -305,24 +434,31 @@ async def _show_review_submit_summary(
     bot: Bot,
     chat_id: int,
     merchant_id: int,
-    ratings: dict[str, int | None],
+    ratings: dict[str, int | str | None],
     free_text: str,
 ) -> None:
-    review_lines: list[str] = []
-    for key, _ in _REVIEW_QUESTIONS:
-        score = int(ratings.get(key) or 0)
-        review_lines.append(f"⭐ {_review_question_title(key)}: {score}/5")
+    review_lines = [
+        f"⭐ דירוג: {_review_stars(int(ratings.get('rating') or 0))}",
+        f"📦 איכות הסחורה: {str(ratings.get('product_quality') or '-')}",
+        f"💬 איכות השירות: {str(ratings.get('service_quality') or '-')}",
+        f"🤝 יחס ושירות: {str(ratings.get('attitude') or '-')}",
+        f"⚡ מהירות השירות: {str(ratings.get('speed') or '-')}",
+        f"🔄 חזרה לרכישה: {str(ratings.get('rebuy') or '-')}",
+        f"🤖 חוויה בבוט והמלצה: {str(ratings.get('bot_experience') or '-')}",
+    ]
+    free = (free_text or "").strip()
+    free_block = f"\n\n📝 הערה חופשית:\n{free}" if free else ""
     await bot.send_message(
         chat_id,
         (
             "✅ <b>אישור לפני שליחה</b>\n\n"
             + "\n".join(review_lines)
-            + f"\n\n📝 חוות דעת:\n{free_text.strip() or '-'}"
+            + free_block
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📨 שלח ביקורת", callback_data=f"pub:user:mrev:send:{merchant_id}")],
-            [InlineKeyboardButton("✏️ שינוי ביקורת", callback_data=f"pub:user:mrev:edit:{merchant_id}")],
+            [InlineKeyboardButton("✏️ שינוי הערה", callback_data=f"pub:user:mrev:edit:{merchant_id}")],
             [InlineKeyboardButton("❌ ביטול הגשה", callback_data=f"pub:user:mrev:cancel:{merchant_id}")],
         ]),
     )
@@ -1411,7 +1547,7 @@ async def _show_public_reviews_list(
     page = max(0, min(page, count - 1))
     review = reviews[page]
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
-    review_text = str(review.get("review_text") or "-").strip() or "-"
+    review_text = _compact_review_body(str(review.get("review_text") or "-"))
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
     created_raw = str(review.get("created_at") or "").strip()
@@ -1441,11 +1577,11 @@ async def _show_public_reviews_list(
     await bot.send_message(
         chat_id,
         (
-            f"📖 <b>חוות דעת על {display_name}</b>\n\n"
+            f"📖 <b>חוות דעת על {display_name}</b>\n"
             f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
             f"👤 מגיש: <b>{reviewer_name}</b>\n"
-            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
-            f"📝 תוכן הביקורת:\n{review_text}"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n"
+            f"{review_text}"
             f"{reply_block}"
         ),
         parse_mode="HTML",
@@ -1478,7 +1614,7 @@ async def _show_my_submitted_reviews(
     page = max(0, min(page, count - 1))
     review = rows[page]
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
-    review_text = str(review.get("review_text") or "-").strip() or "-"
+    review_text = _compact_review_body(str(review.get("review_text") or "-"))
     status = str(review.get("status") or "pending")
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
@@ -1510,12 +1646,12 @@ async def _show_my_submitted_reviews(
     await bot.send_message(
         chat_id,
         (
-            "🗂️ <b>הביקורות שאני הגשתי</b>\n\n"
+            "🗂️ <b>הביקורות שאני הגשתי</b>\n"
             f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
             f"📌 סטטוס: <b>{status_label}</b>\n"
             f"👤 מגיש: <b>{reviewer_name}</b>\n"
-            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
-            f"📝 תוכן הביקורת:\n{review_text}"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n"
+            f"{review_text}"
             f"{reply_block}"
         ),
         parse_mode="HTML",
@@ -1785,11 +1921,18 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
             return True
         if not isinstance(ratings, dict):
             ratings = _empty_review_ratings()
-        missing_keys = [key for key, _ in _REVIEW_QUESTIONS if int(ratings.get(key) or 0) < 1]
+        missing_keys: list[str] = []
+        for key, _ in _REVIEW_QUESTIONS:
+            value = ratings.get(key)
+            if key == "rating":
+                if int(value or 0) < 1:
+                    missing_keys.append(key)
+            elif not str(value or "").strip():
+                missing_keys.append(key)
         if missing_keys:
             context.user_data.pop(_MERCHANT_STATE_KEY, None)
             await update.message.reply_text(
-                "⚠️ לפני כתיבת הטקסט צריך להשלים את כל הדירוגים.",
+                "⚠️ לפני כתיבת ההערה צריך להשלים את כל שלבי חוות הדעת.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ חזרה לשאלות הדירוג", callback_data=f"pub:user:mrev:submit:{merchant_id}")],
                 ]),
@@ -2891,14 +3034,25 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 context.user_data.get(_MERCHANT_REVIEW_RATINGS_KEY) or _empty_review_ratings(),
             )
             return
+        if sub_action == "skiptext":
+            ratings = context.user_data.get(_MERCHANT_REVIEW_RATINGS_KEY) or _empty_review_ratings()
+            context.user_data[_MERCHANT_REVIEW_TEXT_KEY] = ""
+            context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            await _show_review_submit_summary(
+                bot,
+                chat_id,
+                merchant_id,
+                ratings,
+                "",
+            )
+            return
         if sub_action == "rate":
             question_key = str(parts[5]) if len(parts) > 5 else ""
             rating = int(parts[6]) if len(parts) > 6 and str(parts[6]).isdigit() else 0
-            valid_keys = {key for key, _ in _REVIEW_QUESTIONS}
-            if question_key not in valid_keys:
+            if question_key != "rating":
                 await bot.send_message(chat_id, "⚠️ שאלה לא תקינה. נתחיל מחדש.")
                 context.user_data[_MERCHANT_REVIEW_RATINGS_KEY] = _empty_review_ratings()
-                await _prompt_review_rating(bot, chat_id, merchant_id, question_index=0)
+                await _prompt_review_rating(bot, chat_id, merchant_id)
                 return
             if rating < 1 or rating > 5:
                 await bot.send_message(chat_id, "⚠️ דירוג לא תקין. בחר דירוג בין 1 ל-5.")
@@ -2911,11 +3065,32 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ratings = _empty_review_ratings()
             ratings[question_key] = rating
             context.user_data[_MERCHANT_REVIEW_RATINGS_KEY] = ratings
+            next_key = _review_next_question_key("rating")
+            if next_key:
+                await _prompt_review_pick(bot, chat_id, merchant_id, next_key)
+            else:
+                context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_REVIEW
+                await _prompt_review_free_text(bot, chat_id, merchant_id, ratings)
+            return
+        if sub_action == "pick":
+            question_key = str(parts[5]) if len(parts) > 5 else ""
+            option_idx = int(parts[6]) if len(parts) > 6 and str(parts[6]).isdigit() else -1
+            options = _REVIEW_PICK_OPTIONS.get(question_key) or []
+            if option_idx < 0 or option_idx >= len(options):
+                await bot.send_message(chat_id, "⚠️ בחירה לא תקינה. נסה שוב.")
+                if question_key:
+                    await _prompt_review_pick(bot, chat_id, merchant_id, question_key)
+                return
+            selected_value = options[option_idx][0]
+            ratings = context.user_data.get(_MERCHANT_REVIEW_RATINGS_KEY)
+            if not isinstance(ratings, dict):
+                ratings = _empty_review_ratings()
+            ratings[question_key] = selected_value
+            context.user_data[_MERCHANT_REVIEW_RATINGS_KEY] = ratings
 
-            ordered_keys = [key for key, _ in _REVIEW_QUESTIONS]
-            current_index = ordered_keys.index(question_key)
-            if current_index < len(ordered_keys) - 1:
-                await _prompt_review_rating(bot, chat_id, merchant_id, question_index=current_index + 1)
+            next_key = _review_next_question_key(question_key)
+            if next_key:
+                await _prompt_review_pick(bot, chat_id, merchant_id, next_key)
             else:
                 context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_REVIEW
                 await _prompt_review_free_text(bot, chat_id, merchant_id, ratings)
@@ -2923,10 +3098,6 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if sub_action == "send":
             ratings = context.user_data.get(_MERCHANT_REVIEW_RATINGS_KEY) or _empty_review_ratings()
             free_text = str(context.user_data.get(_MERCHANT_REVIEW_TEXT_KEY) or "").strip()
-            if not free_text:
-                context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_REVIEW
-                await _prompt_review_free_text(bot, chat_id, merchant_id, ratings)
-                return
             reviewer_name = query.from_user.full_name or query.from_user.username or str(query.from_user.id)
             structured_text = _compose_structured_review_text(ratings, free_text)
             review_id = create_merchant_review(merchant_id, query.from_user.id, reviewer_name, structured_text)
@@ -2946,7 +3117,13 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop(_MERCHANT_REVIEW_TEXT_KEY, None)
             await bot.send_message(
                 chat_id,
-                "✅ חוות הדעת התקבלה ונשלחה לבדיקה. תקבל הודעה לאחר שתאושר או תידחה.",
+                (
+                    "✅ <b>חוות הדעת התקבלה בהצלחה!</b>\n\n"
+                    "תודה על הזמן שהקדשת לשיתוף החוויה שלך.\n"
+                    "המשוב שלך חשוב לנו ויסייע לנו להמשיך לשפר\n"
+                    "את איכות השירות."
+                ),
+                parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ חזרה לבוט ראשי", callback_data="pub:user:home")],
                 ]),

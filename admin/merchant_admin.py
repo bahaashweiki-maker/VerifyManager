@@ -316,6 +316,34 @@ def _format_dt_full(raw: str | None) -> str:
     return text
 
 
+def _compact_review_body(review_text: str) -> str:
+    raw_lines = [str(line or "").strip() for line in str(review_text or "").splitlines()]
+    lines = [line for line in raw_lines if line and line != "━━━━━━━━━━━━━━" and line != "⭐ חוות דעת על השירות"]
+    if not lines:
+        return "-"
+
+    compact: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line == "⭐ דירוג:" and i + 1 < len(lines):
+            stars = lines[i + 1]
+            if all(ch in "★☆" for ch in stars):
+                score = stars.count("★")
+                compact.append(f"⭐ דירוג: {score}/5 | {stars}")
+                i += 2
+                continue
+        if line.endswith(":") and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            if not nxt.endswith(":"):
+                compact.append(f"{line} {nxt}")
+                i += 2
+                continue
+        compact.append(line)
+        i += 1
+    return "\n".join(compact)
+
+
 async def _show_reviews_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_state(context)
     pending_count = count_reviews_by_status("pending")
@@ -405,7 +433,7 @@ async def _show_review_details(update: Update, context: ContextTypes.DEFAULT_TYP
     merchant_id = int(review.get("merchant_id") or 0)
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
     created_at = _format_dt_full(str(review.get("created_at") or ""))
-    review_text = str(review.get("review_text") or "-").strip() or "-"
+    review_text = _compact_review_body(str(review.get("review_text") or "-"))
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
     merchant_reply_dt = _format_dt_full(str(review.get("merchant_reply_updated_at") or ""))
@@ -437,15 +465,13 @@ async def _show_review_details(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.callback_query.edit_message_text(
         (
-            f"⭐ <b>פרטי חוות דעת</b>\n\n"
+            f"⭐ <b>פרטי חוות דעת</b>\n"
             f"🆔 פנייה: <b>RV-{review_id}</b>\n"
             f"📌 סטטוס: <b>{_review_status_label(status_key)}</b>\n"
             f"👤 שולח: <b>{reviewer_name}</b>\n"
-            f"🆔 שולח: <code>{reviewer_id}</code>\n"
             f"🏪 סוחר: <b>{merchant_name}</b>\n"
-            f"🆔 סוחר: <code>{merchant_id}</code>\n"
-            f"🕒 תאריך/שעת שליחה: <b>{created_at}</b>\n\n"
-            f"📝 ביקורת:\n{review_text}\n\n"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n"
+            f"{review_text}\n\n"
             f"{reply_block}"
         ),
         reply_markup=InlineKeyboardMarkup(rows),
