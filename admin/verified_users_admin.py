@@ -1677,10 +1677,17 @@ async def _execute_revoke(
                 await context.bot.send_message(
                     chat_id=v["telegram_id"],
                     text=(
-                        "❌ <b>האימות שלך בוטל.</b>\n\n"
-                        "ניתן להגיש בקשת אימות חדשה דרך המערכת."
+                        "### <b>ל</b>\n\n"
+                        "שלום,\n\n"
+                        "האימות שלך במערכת בוטל על ידי הנהלת המערכת.\n\n"
+                        "אם לדעתך הביטול בוצע בטעות, או שברצונך לקבל פרטים נוספים ולברר את הסיבה לביטול — ניתן לפנות להנהלה באמצעות כפתור <b>📞 צור קשר</b>.\n\n"
+                        "נשמח לסייע ולבדוק את פנייתך.\n\n"
+                        "<b>סטטוס האימות: ❌ לא מאומת</b>"
                     ),
                     parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📞 צור קשר", callback_data="pub:user:contact")],
+                    ]),
                 )
             except Exception:
                 pass
