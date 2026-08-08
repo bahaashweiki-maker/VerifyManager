@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS merchant_reviews (
     review_text     TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending',
     response_text   TEXT,
+    merchant_reply_text TEXT,
+    merchant_reply_status TEXT,
+    merchant_reply_updated_at TEXT,
+    merchant_reply_admin_note TEXT,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -65,3 +69,11 @@ def _ensure_review_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE merchant_reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
     if "response_text" not in existing:
         conn.execute("ALTER TABLE merchant_reviews ADD COLUMN response_text TEXT")
+    if "merchant_reply_text" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN merchant_reply_text TEXT")
+    if "merchant_reply_status" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN merchant_reply_status TEXT")
+    if "merchant_reply_updated_at" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN merchant_reply_updated_at TEXT")
+    if "merchant_reply_admin_note" not in existing:
+        conn.execute("ALTER TABLE merchant_reviews ADD COLUMN merchant_reply_admin_note TEXT")

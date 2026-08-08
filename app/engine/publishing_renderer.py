@@ -78,11 +78,15 @@ from repositories.merchant_channels_repository import (
     get_channel_membership_chat_ref,
 )
 from repositories.merchant_reviews_repository import (
+    count_approved_reviews_for_merchant,
     count_reviews_by_reviewer,
     count_merchant_reviews,
     create_merchant_review,
+    get_merchant_review,
+    list_approved_reviews_for_merchant,
     list_reviews_by_reviewer,
     list_merchant_reviews,
+    submit_merchant_reply,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,6 +132,8 @@ _MERCHANT_REVIEW_TARGET_KEY = "merchant_review_target"
 _MERCHANT_REVIEW_RATING_KEY = "merchant_review_rating"
 _MERCHANT_REVIEW_RATINGS_KEY = "merchant_review_ratings"
 _MERCHANT_REVIEW_TEXT_KEY = "merchant_review_text"
+_MERCHANT_REPLY_REVIEW_ID_KEY = "merchant_reply_review_id"
+_MERCHANT_REPLY_PAGE_KEY = "merchant_reply_page"
 _MERCHANT_CONTACT_TARGET_KEY = "merchant_contact_target"
 _MERCHANT_EDIT_PUB_ID_KEY = "merchant_edit_publication_id"
 _MERCHANT_CHANNEL_PICKER_SOURCE_KEY = "merchant_channel_picker_source"
@@ -137,6 +143,7 @@ _MERCHANT_PUBLICATION_MODE_KEY = "merchant_publication_mode"
 _AWAIT_MERCHANT_TEXT = "merchant_await_text"
 _AWAIT_MERCHANT_MEDIA = "merchant_await_media"
 _AWAIT_MERCHANT_REVIEW = "merchant_await_review"
+_AWAIT_MERCHANT_REPLY = "merchant_await_reply"
 _AWAIT_MERCHANT_CONTACT = "merchant_await_contact"
 
 _MERCHANT_START_HOME = "merchant_home"
@@ -211,6 +218,27 @@ def _compose_structured_review_text(ratings: dict[str, int | None], free_text: s
         f"📝 חוות דעת: {free_text.strip() or '-'}",
     ]
     return "\n".join(lines)
+
+
+def _format_review_datetime(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            continue
+    return text
+
+
+def _merchant_reply_status_label(status: str | None) -> str:
+    mapping = {
+        "pending": "ממתין לאישור מנהל",
+        "approved": "אושר לפרסום",
+        "rejected": "נדחה על ידי מנהל",
+    }
+    return mapping.get(str(status or "").strip(), "אין תגובה")
 
 
 async def _prompt_review_rating(
@@ -1051,6 +1079,53 @@ async def _notify_managers_new_review(
             continue
 
 
+async def _notify_managers_pending_reply(
+    bot: Bot,
+    review_id: int,
+    merchant_id: int,
+    merchant_name: str,
+    reply_text: str,
+) -> None:
+    recipients: set[int] = set()
+    if ADMIN_ID > 0:
+        recipients.add(int(ADMIN_ID))
+    try:
+        recipients.update(int(admin_id) for admin_id in get_all_admins() if int(admin_id) > 0)
+    except Exception:
+        pass
+    if not recipients:
+        return
+
+    preview = (reply_text or "").strip()
+    if len(preview) > 180:
+        preview = preview[:180].rstrip() + "..."
+
+    text = (
+        "🚨 <b>התראת מענה סוחר חדש</b>\n\n"
+        "⏳ מענה סוחר ממתין לאישור מנהל\n"
+        f"🆔 ביקורת: <b>RV-{review_id}</b>\n"
+        f"🏪 סוחר: <b>{merchant_name}</b> | <code>{merchant_id}</code>\n"
+        f"🕒 זמן: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b>\n\n"
+        f"💬 תצוגה מקדימה:\n{preview or '-'}"
+    )
+
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ פתח ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_approved_{review_id}")],
+        [InlineKeyboardButton("⭐ ניהול חוות דעת", callback_data="MERCHANT_ADM_REVIEWS")],
+    ])
+
+    for manager_id in recipients:
+        try:
+            await bot.send_message(
+                manager_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        except Exception:
+            continue
+
+
 async def _run_merchant_publication_send(
     bot: Bot,
     chat_id: int,
@@ -1284,7 +1359,8 @@ async def _show_public_reviews(
 ) -> None:
     profile = get_merchant_profile(merchant_id)
     display_name = profile["display_name"] if profile else str(merchant_id)
-    count = count_merchant_reviews(merchant_id)
+    all_reviews = list_merchant_reviews(merchant_id, limit=300)
+    count = len([row for row in all_reviews if str(row.get("status") or "pending") == "approved"])
     await bot.send_message(
         chat_id,
         (
@@ -1336,6 +1412,8 @@ async def _show_public_reviews_list(
     review = reviews[page]
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
     review_text = str(review.get("review_text") or "-").strip() or "-"
+    merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
+    merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
     created_raw = str(review.get("created_at") or "").strip()
     created_at = created_raw or "-"
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
@@ -1356,6 +1434,10 @@ async def _show_public_reviews_list(
         rows.append(nav_row)
     rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
 
+    reply_block = ""
+    if merchant_reply_status == "approved" and merchant_reply_text:
+        reply_block = f"\n\n💬 תגובת הסוחר:\n{merchant_reply_text}"
+
     await bot.send_message(
         chat_id,
         (
@@ -1364,6 +1446,7 @@ async def _show_public_reviews_list(
             f"👤 מגיש: <b>{reviewer_name}</b>\n"
             f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
             f"📝 תוכן הביקורת:\n{review_text}"
+            f"{reply_block}"
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(rows),
@@ -1397,6 +1480,8 @@ async def _show_my_submitted_reviews(
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
     review_text = str(review.get("review_text") or "-").strip() or "-"
     status = str(review.get("status") or "pending")
+    merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
+    merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
     status_label = {"pending": "ממתינה", "approved": "מאושרת", "rejected": "נדחתה"}.get(status, status)
     created_raw = str(review.get("created_at") or "").strip()
     created_at = created_raw or "-"
@@ -1418,6 +1503,10 @@ async def _show_my_submitted_reviews(
         kb_rows.append(nav_row)
     kb_rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
 
+    reply_block = ""
+    if merchant_reply_status == "approved" and merchant_reply_text:
+        reply_block = f"\n\n💬 תגובת הסוחר:\n{merchant_reply_text}"
+
     await bot.send_message(
         chat_id,
         (
@@ -1427,6 +1516,83 @@ async def _show_my_submitted_reviews(
             f"👤 מגיש: <b>{reviewer_name}</b>\n"
             f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
             f"📝 תוכן הביקורת:\n{review_text}"
+            f"{reply_block}"
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+
+
+async def _show_merchant_reviews_center(
+    bot: Bot,
+    chat_id: int,
+    merchant_id: int,
+    capability_flags: dict[str, bool],
+    page: int = 0,
+) -> None:
+    reviews = list_approved_reviews_for_merchant(merchant_id, limit=300)
+    count = len(reviews)
+    if count <= 0:
+        await bot.send_message(
+            chat_id,
+            (
+                "⭐ <b>חוות הדעת על הסוחר</b>\n\n"
+                "אין עדיין חוות דעת מאושרות להצגה."
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+            ]),
+        )
+        return
+
+    page = max(0, min(page, count - 1))
+    review = reviews[page]
+    review_id = int(review.get("id") or 0)
+    reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
+    created_at = _format_review_datetime(review.get("created_at"))
+    review_text = str(review.get("review_text") or "-").strip() or "-"
+    reply_text = str(review.get("merchant_reply_text") or "").strip()
+    reply_status = str(review.get("merchant_reply_status") or "").strip()
+
+    if reply_status == "approved" and reply_text:
+        reply_block = f"💬 תגובת הסוחר (מאושרת):\n{reply_text}"
+    elif reply_text:
+        reply_block = (
+            f"💬 תגובת הסוחר: <b>{_merchant_reply_status_label(reply_status)}</b>\n"
+            f"{reply_text}"
+        )
+    else:
+        reply_block = "💬 תגובת הסוחר: <b>טרם נשלחה</b>"
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"pub:user:merchant:reviewspg:{page - 1}"))
+    if page < count - 1:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"pub:user:merchant:reviewspg:{page + 1}"))
+
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    if nav_row:
+        kb_rows.append(nav_row)
+
+    can_answer = capability_flags.get("user.review.reply") and (not reply_text or reply_status == "rejected")
+    if can_answer:
+        action_label = "💬 מענה על ביקורת"
+        kb_rows.append([
+            InlineKeyboardButton(action_label, callback_data=f"pub:user:merchant:replystart:{review_id}:{page}")
+        ])
+
+    kb_rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
+
+    await bot.send_message(
+        chat_id,
+        (
+            "⭐ <b>חוות הדעת על הסוחר</b>\n\n"
+            f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
+            f"👤 מגיש: <b>{reviewer_name}</b>\n"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
+            f"📝 ביקורת:\n{review_text}\n\n"
+            f"{reply_block}"
         ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(kb_rows),
@@ -1641,6 +1807,56 @@ async def handle_merchant_input(update: Update, context: ContextTypes.DEFAULT_TY
             merchant_id,
             ratings,
             review_text,
+        )
+        return True
+
+    if state == _AWAIT_MERCHANT_REPLY:
+        review_id = int(context.user_data.get(_MERCHANT_REPLY_REVIEW_ID_KEY) or 0)
+        page = int(context.user_data.get(_MERCHANT_REPLY_PAGE_KEY) or 0)
+        context.user_data.pop(_MERCHANT_STATE_KEY, None)
+        context.user_data.pop(_MERCHANT_REPLY_REVIEW_ID_KEY, None)
+        context.user_data.pop(_MERCHANT_REPLY_PAGE_KEY, None)
+
+        reply_text = (update.message.text or "").strip()
+        if review_id <= 0:
+            await update.message.reply_text("⚠️ לא נמצאה ביקורת למענה. נסה שוב.")
+            return True
+        if not reply_text:
+            await update.message.reply_text("⚠️ לא ניתן לשלוח מענה ריק.")
+            return True
+
+        capability_flags = get_merchant_capability_flags(update.effective_user.id)
+        if not capability_flags.get("user.review.reply"):
+            await update.message.reply_text("⛔ אין לך הרשאת מענה לביקורת.")
+            return True
+
+        review = get_merchant_review(review_id)
+        if not review or int(review.get("merchant_id") or 0) != int(update.effective_user.id):
+            await update.message.reply_text("⚠️ אין גישה לביקורת זו.")
+            return True
+
+        ok = submit_merchant_reply(review_id, update.effective_user.id, reply_text)
+        if not ok:
+            await update.message.reply_text("❌ לא ניתן לשמור את המענה כרגע. נסה שוב.")
+            return True
+
+        merchant_profile = get_merchant_profile(update.effective_user.id)
+        merchant_name = str((merchant_profile or {}).get("display_name") or update.effective_user.full_name or update.effective_user.id)
+        await _notify_managers_pending_reply(
+            context.bot,
+            review_id,
+            update.effective_user.id,
+            merchant_name,
+            reply_text,
+        )
+
+        await update.message.reply_text(
+            "✅ תגובת הסוחר נשלחה לאישור מנהל. לאחר אישור היא תוצג מתחת לביקורת.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזרה לביקורת", callback_data=f"pub:user:merchant:reviewspg:{page}")],
+                [InlineKeyboardButton("🔁 הפעל מחדש", callback_data="RESTART_BOT_PENDING")],
+                [InlineKeyboardButton("⬅️ חזור לבוט הראשי", callback_data="pub:user:home")],
+            ]),
         )
         return True
 
@@ -3350,30 +3566,73 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        if sub_action == "reviews":
-            if not capability_flags.get("user.review.write"):
-                await bot.send_message(
-                    chat_id,
-                    "⛔ אין לך הרשאת חוות דעת כרגע.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
-                    ]),
-                )
+        if sub_action in {"reviews", "reviewspg"}:
+            page = int(parts[4]) if len(parts) > 4 and str(parts[4]).isdigit() else 0
+            await _show_merchant_reviews_center(
+                bot,
+                chat_id,
+                query.from_user.id,
+                capability_flags,
+                page=page,
+            )
+            return
+
+        if sub_action == "replystart":
+            review_id = int(parts[4]) if len(parts) > 4 and str(parts[4]).isdigit() else 0
+            page = int(parts[5]) if len(parts) > 5 and str(parts[5]).isdigit() else 0
+            if review_id <= 0:
+                await bot.send_message(chat_id, "⚠️ לא נמצאה ביקורת למענה.")
                 return
-            reviews = list_merchant_reviews(query.from_user.id, limit=10)
-            count = count_merchant_reviews(query.from_user.id)
-            lines = [f"• {str(item.get('review_text') or '').strip()}" for item in reviews] or ["אין עדיין חוות דעת."]
+            if not capability_flags.get("user.review.reply"):
+                await bot.send_message(chat_id, "⛔ אין לך הרשאת מענה לביקורת.")
+                return
+            review = get_merchant_review(review_id)
+            if not review or int(review.get("merchant_id") or 0) != int(query.from_user.id):
+                await bot.send_message(chat_id, "⚠️ אין גישה לביקורת זו.")
+                return
+            if str(review.get("status") or "pending") != "approved":
+                await bot.send_message(chat_id, "⚠️ ניתן לענות רק על ביקורת מאושרת.")
+                return
+            existing_reply = str(review.get("merchant_reply_text") or "").strip()
+            existing_status = str(review.get("merchant_reply_status") or "").strip()
+            if existing_reply and existing_status in {"pending", "approved"}:
+                await bot.send_message(chat_id, "ℹ️ תגובה כבר נשלחה. לאחר אישור מנהל לא ניתן לערוך מצד הסוחר.")
+                return
+
+            context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_REPLY
+            context.user_data[_MERCHANT_REPLY_REVIEW_ID_KEY] = review_id
+            context.user_data[_MERCHANT_REPLY_PAGE_KEY] = page
+            current_reply = existing_reply
+            status_line = _merchant_reply_status_label(review.get("merchant_reply_status"))
+            intro = (
+                "💬 <b>מענה סוחר לביקורת</b>\n\n"
+                f"מצב תגובה נוכחי: <b>{status_line}</b>\n"
+                "כתוב עכשיו את תגובת הסוחר בהודעה אחת.\n"
+                "התגובה תישלח לאישור מנהל לפני פרסום."
+            )
+            if current_reply:
+                intro += f"\n\nנוסח נוכחי:\n{current_reply}"
             await bot.send_message(
                 chat_id,
-                (
-                    "⭐ <b>חוות הדעת שלי</b>\n\n"
-                    f"סה\"כ חוות דעת: <b>{count}</b>\n\n"
-                    + "\n".join(lines)
-                ),
+                intro,
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    [InlineKeyboardButton("⬅️ ביטול וחזרה", callback_data=f"pub:user:merchant:replycancel:{page}")],
                 ]),
+            )
+            return
+
+        if sub_action == "replycancel":
+            page = int(parts[4]) if len(parts) > 4 and str(parts[4]).isdigit() else 0
+            context.user_data.pop(_MERCHANT_STATE_KEY, None)
+            context.user_data.pop(_MERCHANT_REPLY_REVIEW_ID_KEY, None)
+            context.user_data.pop(_MERCHANT_REPLY_PAGE_KEY, None)
+            await _show_merchant_reviews_center(
+                bot,
+                chat_id,
+                query.from_user.id,
+                capability_flags,
+                page=page,
             )
             return
 
@@ -3391,7 +3650,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             menu_rows.append([InlineKeyboardButton("🧩 פרסום נוסף (מרובה)", callback_data="pub:user:merchant:newpub")])
         if capability_flags.get("user.merchant.schedule") and not missing_required:
             menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
-        if capability_flags.get("user.review.write"):
+        if capability_flags.get("user.review.write") or capability_flags.get("user.review.reply"):
             menu_rows.append([InlineKeyboardButton("⭐ חוות דעת", callback_data="pub:user:merchant:reviews")])
         if capability_flags.get("user.merchant.required"):
             menu_rows.append([InlineKeyboardButton("🔐 חובת הצטרפות", callback_data="pub:user:merchant:required")])

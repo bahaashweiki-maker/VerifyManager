@@ -48,11 +48,16 @@ from repositories.merchant_publication_repository import (
     set_merchant_hourly_publish,
 )
 from repositories.merchant_reviews_repository import (
+    admin_edit_merchant_reply,
     approve_merchant_review,
+    approve_merchant_reply,
     count_reviews_by_status,
+    count_pending_merchant_replies,
+    delete_merchant_reply,
     delete_merchant_review,
     get_merchant_review,
     list_reviews_by_status,
+    reject_merchant_reply,
     reject_merchant_review,
 )
 from services.merchant_service import list_merchant_profiles
@@ -65,6 +70,9 @@ _STATE = "merchant_admin_state"
 _CHAT_ID = "merchant_admin_chat_id"
 _MSG_ID = "merchant_admin_msg_id"
 _WAIT_CHANNEL = "WAITING_MERCHANT_CHANNEL"
+_WAIT_REPLY_EDIT = "WAITING_MERCHANT_REPLY_EDIT"
+_REPLY_EDIT_REVIEW_ID = "merchant_reply_edit_review_id"
+_REPLY_EDIT_SOURCE_STATUS = "merchant_reply_edit_source_status"
 _REVIEWS_PAGE_SIZE = 8
 
 
@@ -157,13 +165,64 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         payload = data.removeprefix("MERCHANT_ADM_REVIEW_DELETE_")
         status_key, review_id_raw = payload.split("_", 1)
         return await _delete_review(update, context, int(review_id_raw), status_key)
+    if data.startswith("MERCHANT_ADM_REPLY_APPROVE_"):
+        payload = data.removeprefix("MERCHANT_ADM_REPLY_APPROVE_")
+        status_key, review_id_raw = payload.split("_", 1)
+        return await _approve_merchant_reply_action(update, context, int(review_id_raw), status_key)
+    if data.startswith("MERCHANT_ADM_REPLY_REJECT_"):
+        payload = data.removeprefix("MERCHANT_ADM_REPLY_REJECT_")
+        status_key, review_id_raw = payload.split("_", 1)
+        return await _reject_merchant_reply_action(update, context, int(review_id_raw), status_key)
+    if data.startswith("MERCHANT_ADM_REPLY_EDIT_"):
+        payload = data.removeprefix("MERCHANT_ADM_REPLY_EDIT_")
+        status_key, review_id_raw = payload.split("_", 1)
+        return await _prompt_edit_merchant_reply(update, context, int(review_id_raw), status_key)
+    if data.startswith("MERCHANT_ADM_REPLY_DELETE_"):
+        payload = data.removeprefix("MERCHANT_ADM_REPLY_DELETE_")
+        status_key, review_id_raw = payload.split("_", 1)
+        return await _delete_merchant_reply_action(update, context, int(review_id_raw), status_key)
+    if data.startswith("MERCHANT_ADM_REPLY_MANAGE_"):
+        payload = data.removeprefix("MERCHANT_ADM_REPLY_MANAGE_")
+        status_key, review_id_raw = payload.split("_", 1)
+        return await _show_reply_management(update, context, int(review_id_raw), status_key)
     if data == "MERCHANT_ADM_BACK":
         return await _show_main_menu(update, context)
 
 
 async def handle_merchant_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = context.user_data.get(_STATE)
-    if state != _WAIT_CHANNEL or not update.message:
+    if not update.message:
+        return
+
+    if state == _WAIT_REPLY_EDIT:
+        review_id = int(context.user_data.get(_REPLY_EDIT_REVIEW_ID) or 0)
+        source_status = str(context.user_data.get(_REPLY_EDIT_SOURCE_STATUS) or "approved")
+        text = (update.message.text or "").strip()
+        _clear_state(context)
+        if review_id <= 0 or not text:
+            return
+
+        review = get_merchant_review(review_id)
+        keep_status = str((review or {}).get("merchant_reply_status") or "pending")
+        if keep_status not in {"pending", "approved", "rejected"}:
+            keep_status = "pending"
+        ok = admin_edit_merchant_reply(review_id, text, keep_status=keep_status)
+
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "✅ מענה הסוחר עודכן." if ok else "❌ לא ניתן לעדכן כרגע.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+                [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
+            ]),
+        )
+        return
+
+    if state != _WAIT_CHANNEL:
         return
 
     text = (update.message.text or "").strip()
@@ -226,6 +285,15 @@ def _review_status_label(status: str) -> str:
     return labels.get(status, status)
 
 
+def _merchant_reply_status_label(status: str) -> str:
+    labels = {
+        "pending": "ממתין לאישור מנהל",
+        "approved": "אושר לפרסום",
+        "rejected": "נדחה",
+    }
+    return labels.get(status, "ללא תגובה")
+
+
 def _status_back_callback(status: str) -> str:
     mapping = {
         "pending": "MERCHANT_ADM_REVIEWS_PENDING",
@@ -253,10 +321,12 @@ async def _show_reviews_status_menu(update: Update, context: ContextTypes.DEFAUL
     pending_count = count_reviews_by_status("pending")
     approved_count = count_reviews_by_status("approved")
     rejected_count = count_reviews_by_status("rejected")
+    pending_replies = count_pending_merchant_replies()
     await update.callback_query.edit_message_text(
         (
             "⭐ <b>ניהול חוות דעת</b>\n\n"
-            "בחר סטטוס לצפייה ברשימת הביקורות:"
+            "בחר סטטוס לצפייה ברשימת הביקורות:\n"
+            f"💬 תגובות סוחר ממתינות לאישור: <b>{pending_replies}</b>"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(f"⏳ ממתינים ({pending_count})", callback_data="MERCHANT_ADM_REVIEWS_PENDING")],
@@ -336,7 +406,34 @@ async def _show_review_details(update: Update, context: ContextTypes.DEFAULT_TYP
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
     created_at = _format_dt_full(str(review.get("created_at") or ""))
     review_text = str(review.get("review_text") or "-").strip() or "-"
+    merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
+    merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
+    merchant_reply_dt = _format_dt_full(str(review.get("merchant_reply_updated_at") or ""))
     merchant_name = str((_get_merchant_or_none(merchant_id) or {}).get("display_name") or merchant_id)
+
+    if merchant_reply_text:
+        reply_block = (
+            f"💬 תגובת סוחר: <b>{_merchant_reply_status_label(merchant_reply_status)}</b>\n"
+            f"🕒 עדכון תגובה: <b>{merchant_reply_dt}</b>\n"
+            f"{merchant_reply_text}"
+        )
+    else:
+        reply_block = "💬 תגובת סוחר: <b>טרם נשלחה</b>"
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("✅ אשר ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_APPROVE_{source_status}_{review_id}")],
+        [InlineKeyboardButton("❌ דחה ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_REJECT_{source_status}_{review_id}")],
+        [InlineKeyboardButton("🗑 מחק ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_DELETE_{source_status}_{review_id}")],
+    ]
+
+    if merchant_reply_text:
+        rows.append([InlineKeyboardButton("🛠️ ניהול תגובת סוחר", callback_data=f"MERCHANT_ADM_REPLY_MANAGE_{source_status}_{review_id}")])
+
+    rows.extend([
+        [InlineKeyboardButton("📞 צור קשר עם הלקוח", url=f"tg://user?id={reviewer_id}")],
+        [InlineKeyboardButton("🏪 צור קשר עם הסוחר", url=f"tg://user?id={merchant_id}")],
+        [InlineKeyboardButton("🔙 חזרה לרשימה", callback_data=_status_back_callback(source_status))],
+    ])
 
     await update.callback_query.edit_message_text(
         (
@@ -348,16 +445,10 @@ async def _show_review_details(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🏪 סוחר: <b>{merchant_name}</b>\n"
             f"🆔 סוחר: <code>{merchant_id}</code>\n"
             f"🕒 תאריך/שעת שליחה: <b>{created_at}</b>\n\n"
-            f"📝 ביקורת:\n{review_text}"
+            f"📝 ביקורת:\n{review_text}\n\n"
+            f"{reply_block}"
         ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ אשר ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_APPROVE_{source_status}_{review_id}")],
-            [InlineKeyboardButton("❌ דחה ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_REJECT_{source_status}_{review_id}")],
-            [InlineKeyboardButton("🗑 מחק ביקורת", callback_data=f"MERCHANT_ADM_REVIEW_DELETE_{source_status}_{review_id}")],
-            [InlineKeyboardButton("📞 צור קשר עם הלקוח", url=f"tg://user?id={reviewer_id}")],
-            [InlineKeyboardButton("🏪 צור קשר עם הסוחר", url=f"tg://user?id={merchant_id}")],
-            [InlineKeyboardButton("🔙 חזרה לרשימה", callback_data=_status_back_callback(source_status))],
-        ]),
+        reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML",
     )
 
@@ -438,6 +529,167 @@ async def _delete_review(update: Update, context: ContextTypes.DEFAULT_TYPE, rev
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 חזרה לרשימה", callback_data=_status_back_callback(source_status))],
             [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
+        ]),
+    )
+
+
+async def _notify_merchant_reply_decision(
+    context: ContextTypes.DEFAULT_TYPE,
+    review: dict,
+    decision: str,
+) -> None:
+    merchant_id = int(review.get("merchant_id") or 0)
+    review_id = int(review.get("id") or 0)
+    if merchant_id <= 0 or review_id <= 0:
+        return
+    if decision == "approved":
+        text = (
+            "✅ <b>תגובת הסוחר שלך אושרה</b>\n\n"
+            f"המענה לביקורת RV-{review_id} אושר על ידי המנהל וכעת מוצג ללקוחות."
+        )
+    else:
+        text = (
+            "❌ <b>תגובת הסוחר שלך לא אושרה</b>\n\n"
+            f"המענה לביקורת RV-{review_id} נבדק ולא אושר. ניתן לערוך ולשלוח שוב."
+        )
+    try:
+        await context.bot.send_message(
+            merchant_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ חזור לבוט הראשי", callback_data="pub:user:home")],
+            ]),
+        )
+    except Exception:
+        logger.debug("Failed to notify merchant %s about reply decision", merchant_id)
+
+
+async def _approve_merchant_reply_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    review_id: int,
+    source_status: str,
+) -> None:
+    review = get_merchant_review(review_id)
+    if review is None:
+        await update.callback_query.answer("⚠️ ביקורת לא נמצאה", show_alert=True)
+        return await _show_reviews_list(update, context, source_status)
+    ok = approve_merchant_reply(review_id, admin_note="מענה הסוחר אושר על ידי מנהל")
+    if ok:
+        await _notify_merchant_reply_decision(context, review, "approved")
+    await update.callback_query.edit_message_text(
+        "✅ תגובת הסוחר אושרה." if ok else "❌ לא ניתן לאשר את תגובת הסוחר כרגע.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+            [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
+        ]),
+    )
+
+
+async def _reject_merchant_reply_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    review_id: int,
+    source_status: str,
+) -> None:
+    review = get_merchant_review(review_id)
+    if review is None:
+        await update.callback_query.answer("⚠️ ביקורת לא נמצאה", show_alert=True)
+        return await _show_reviews_list(update, context, source_status)
+    ok = reject_merchant_reply(review_id, admin_note="מענה הסוחר נדחה על ידי מנהל")
+    if ok:
+        await _notify_merchant_reply_decision(context, review, "rejected")
+    await update.callback_query.edit_message_text(
+        "❌ תגובת הסוחר נדחתה." if ok else "❌ לא ניתן לדחות את תגובת הסוחר כרגע.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+            [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
+        ]),
+    )
+
+
+async def _prompt_edit_merchant_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    review_id: int,
+    source_status: str,
+) -> None:
+    review = get_merchant_review(review_id)
+    if review is None:
+        await update.callback_query.answer("⚠️ ביקורת לא נמצאה", show_alert=True)
+        return await _show_reviews_list(update, context, source_status)
+    current_text = str(review.get("merchant_reply_text") or "").strip()
+    context.user_data[_STATE] = _WAIT_REPLY_EDIT
+    context.user_data[_REPLY_EDIT_REVIEW_ID] = review_id
+    context.user_data[_REPLY_EDIT_SOURCE_STATUS] = source_status
+    await update.callback_query.edit_message_text(
+        (
+            "✏️ <b>עריכת מענה סוחר</b>\n\n"
+            "שלח עכשיו את נוסח המענה החדש בהודעה אחת."
+            + (f"\n\nנוסח נוכחי:\n{current_text}" if current_text else "")
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ ביטול", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+        ]),
+    )
+
+
+async def _delete_merchant_reply_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    review_id: int,
+    source_status: str,
+) -> None:
+    ok = delete_merchant_reply(review_id)
+    await update.callback_query.edit_message_text(
+        "🗑 תגובת הסוחר נמחקה." if ok else "❌ לא ניתן למחוק את תגובת הסוחר כרגע.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+            [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
+        ]),
+    )
+
+
+async def _show_reply_management(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    review_id: int,
+    source_status: str,
+) -> None:
+    review = get_merchant_review(review_id)
+    if review is None:
+        await update.callback_query.answer("⚠️ ביקורת לא נמצאה", show_alert=True)
+        return await _show_reviews_list(update, context, source_status)
+
+    reply_text = str(review.get("merchant_reply_text") or "").strip()
+    reply_status = str(review.get("merchant_reply_status") or "").strip()
+    reply_dt = _format_dt_full(str(review.get("merchant_reply_updated_at") or ""))
+
+    if not reply_text:
+        return await update.callback_query.edit_message_text(
+            "ℹ️ אין עדיין תגובת סוחר לביקורת זו.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
+            ]),
+        )
+
+    await update.callback_query.edit_message_text(
+        (
+            "🛠️ <b>ניהול תגובת סוחר</b>\n\n"
+            f"🆔 ביקורת: <b>RV-{review_id}</b>\n"
+            f"📌 סטטוס תגובה: <b>{_merchant_reply_status_label(reply_status)}</b>\n"
+            f"🕒 תאריך/שעה: <b>{reply_dt}</b>\n\n"
+            f"💬 תוכן התגובה:\n{reply_text}"
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ אשר תגובה", callback_data=f"MERCHANT_ADM_REPLY_APPROVE_{source_status}_{review_id}")],
+            [InlineKeyboardButton("❌ דחה תגובה", callback_data=f"MERCHANT_ADM_REPLY_REJECT_{source_status}_{review_id}")],
+            [InlineKeyboardButton("✏️ ערוך תגובה", callback_data=f"MERCHANT_ADM_REPLY_EDIT_{source_status}_{review_id}")],
+            [InlineKeyboardButton("🗑 מחק תגובה", callback_data=f"MERCHANT_ADM_REPLY_DELETE_{source_status}_{review_id}")],
+            [InlineKeyboardButton("↩️ חזרה לביקורת", callback_data=f"MERCHANT_ADM_REVIEW_VIEW_{source_status}_{review_id}")],
         ]),
     )
 
@@ -1332,3 +1584,5 @@ def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(_STATE, None)
     context.user_data.pop(_CHAT_ID, None)
     context.user_data.pop(_MSG_ID, None)
+    context.user_data.pop(_REPLY_EDIT_REVIEW_ID, None)
+    context.user_data.pop(_REPLY_EDIT_SOURCE_STATUS, None)
