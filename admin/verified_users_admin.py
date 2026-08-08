@@ -133,12 +133,14 @@ _VID     = "vusers_vid"
 _CID     = "vusers_cid"
 _CHAT_ID = "vusers_chat_id"
 _MSG_ID  = "vusers_msg_id"
+_SEARCH_TERM = "vusers_search_term"
 
 _AWAIT_WARN     = "VUSERS_AWAIT_WARN"
 _AWAIT_MSG      = "VUSERS_AWAIT_MSG"
 _AWAIT_NOTE     = "VUSERS_AWAIT_NOTE"
 _AWAIT_CAT_NAME = "VUSERS_AWAIT_CAT_NAME"
 _AWAIT_CHAT_MSG = "VCHAT_AWAIT_MSG"
+_AWAIT_SEARCH   = "VUSERS_AWAIT_SEARCH"
 
 # ── שיחות אימות — state keys ───────────────────────────────────────────────────
 _VCHAT_VID = "vchat_vid"
@@ -161,6 +163,13 @@ async def verified_users_route(
 
     if data == "VUSERS_LIST":
         return await _show_users_list(update, context)
+
+    if data == "VUSERS_SEARCH":
+        return await _prompt_search(update, context)
+
+    if data.startswith("VUSERS_SEARCH_PAGE_"):
+        page = int(data[len("VUSERS_SEARCH_PAGE_"):])
+        return await _show_search_results(update, context, page)
 
     if data.startswith("VUSERS_VIEW_"):
         vid = int(data[len("VUSERS_VIEW_"):])
@@ -473,6 +482,13 @@ async def handle_verified_users_input(
         await _process_new_catalog(update, context, text)
     elif state == _AWAIT_CHAT_MSG:
         await _process_send_chat_message(update, context, text)
+    elif state == _AWAIT_SEARCH:
+        term = text.strip()
+        if not term:
+            await update.message.reply_text("⚠️ שלח מילה לחיפוש או '-' לאיפוס.")
+            return
+        context.user_data[_SEARCH_TERM] = "" if term == "-" else term
+        await _show_search_results(update, context, page=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +512,7 @@ async def _show_users_list(
             callback_data=f"VUSERS_VIEW_{u['id']}",
         )])
 
+    buttons.append([InlineKeyboardButton("🔍 חיפוש", callback_data="VUSERS_SEARCH")])
     buttons.append([InlineKeyboardButton("📂 ניהול קטלוגים", callback_data="VUSERS_CATMGR")])
     buttons.append([InlineKeyboardButton("🔙 חזרה", callback_data="ADMIN_PANEL")])
 
@@ -507,6 +524,96 @@ async def _show_users_list(
 
     await update.callback_query.edit_message_text(
         text=header,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+
+
+def _search_verified_users(term: str) -> list[dict]:
+    needle = term.strip().lower()
+    username_term = needle.lstrip("@")
+    if not needle:
+        return []
+
+    matches: list[dict] = []
+    for user in get_all_verified_users():
+        full_name = str(user.get("full_name") or "").lower()
+        username = str(user.get("username") or "").lower()
+        telegram_id = str(user.get("telegram_id") or "").lower()
+        display_name = str(user.get("full_name") or user.get("username") or user.get("telegram_id") or "").lower()
+        if (
+            needle in full_name
+            or needle in username
+            or needle in telegram_id
+            or needle in display_name
+            or username_term in username
+        ):
+            matches.append(user)
+    return matches
+
+
+async def _prompt_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _AWAIT_SEARCH
+    context.user_data.pop(_SEARCH_TERM, None)
+    await update.callback_query.edit_message_text(
+        text="🔍 <b>חיפוש מאומתים</b>\n\nשלח שם, יוזר או מזהה טלגרם:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ ביטול", callback_data="VUSERS_LIST")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_search_results(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int = 1,
+) -> None:
+    term = (context.user_data.get(_SEARCH_TERM) or "").strip()
+    if not term:
+        return await _prompt_search(update, context)
+
+    per_page = 10
+    users = _search_verified_users(term)
+    total = len(users)
+
+    if total == 0:
+        await update.callback_query.edit_message_text(
+            text=f"🔍 <b>תוצאות חיפוש</b>\n\nלא נמצאו תוצאות עבור: <b>{term}</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 חיפוש חדש", callback_data="VUSERS_SEARCH")],
+                [InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data="VUSERS_LIST")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = (total + per_page - 1) // per_page
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    current = users[start:start + per_page]
+
+    buttons = []
+    for u in current:
+        name = u["full_name"] or u["username"] or "משתמש לא ידוע"
+        tkey = get_user_type(u["telegram_id"])
+        status_emoji = "🟢" if u.get("status") == "approved" else ("🚫" if u.get("status") == "blocked" else "🔴")
+        emoji = USER_TYPES.get(tkey, {}).get("emoji", "👤")
+        buttons.append([InlineKeyboardButton(f"{status_emoji} {emoji} {name}", callback_data=f"VUSERS_VIEW_{u['id']}")])
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"VUSERS_SEARCH_PAGE_{page - 1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"VUSERS_SEARCH_PAGE_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton("🔍 חיפוש חדש", callback_data="VUSERS_SEARCH")])
+    buttons.append([InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data="VUSERS_LIST")])
+
+    await update.callback_query.edit_message_text(
+        text=f"🔍 <b>תוצאות חיפוש</b>\n<b>{term}</b>\nעמוד {page}/{total_pages} • סה״כ {total}",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
@@ -1791,7 +1898,7 @@ async def _cancel_input(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in (_STATE, _VID, _CID, _CHAT_ID, _MSG_ID, _VCHAT_VID, _VCHAT_ID):
+    for key in (_STATE, _VID, _CID, _CHAT_ID, _MSG_ID, _SEARCH_TERM, _VCHAT_VID, _VCHAT_ID):
         context.user_data.pop(key, None)
 
 

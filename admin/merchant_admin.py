@@ -69,8 +69,10 @@ logger = logging.getLogger(__name__)
 _STATE = "merchant_admin_state"
 _CHAT_ID = "merchant_admin_chat_id"
 _MSG_ID = "merchant_admin_msg_id"
+_SEARCH_TERM = "merchant_admin_search_term"
 _WAIT_CHANNEL = "WAITING_MERCHANT_CHANNEL"
 _WAIT_REPLY_EDIT = "WAITING_MERCHANT_REPLY_EDIT"
+_WAIT_SEARCH = "WAITING_MERCHANT_SEARCH"
 _REPLY_EDIT_REVIEW_ID = "merchant_reply_edit_review_id"
 _REPLY_EDIT_SOURCE_STATUS = "merchant_reply_edit_source_status"
 _REVIEWS_PAGE_SIZE = 8
@@ -98,6 +100,11 @@ async def merchant_admin_route(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _delete_channel(update, context, int(data.rsplit("_", 1)[1]))
     if data == "MERCHANT_ADM_LIST":
         return await _show_merchants(update, context)
+    if data == "MERCHANT_ADM_SEARCH":
+        return await _prompt_merchant_search(update, context)
+    if data.startswith("MERCHANT_ADM_SEARCH_PAGE_"):
+        page = int(data[len("MERCHANT_ADM_SEARCH_PAGE_"):])
+        return await _show_merchant_search_results(update, context, page)
     if data.startswith("MERCHANT_ADM_VIEW_"):
         return await _show_merchant(update, context, int(data.rsplit("_", 1)[1]))
     if data.startswith("MERCHANT_ADM_PERMS_"):
@@ -220,6 +227,15 @@ async def handle_merchant_admin_input(update: Update, context: ContextTypes.DEFA
                 [InlineKeyboardButton("📂 חזרה לסטטוסים", callback_data="MERCHANT_ADM_REVIEWS")],
             ]),
         )
+        return
+
+    if state == _WAIT_SEARCH:
+        term = (update.message.text or "").strip()
+        if not term:
+            await update.message.reply_text("⚠️ שלח מילה לחיפוש או '-' לאיפוס.")
+            return
+        context.user_data[_SEARCH_TERM] = "" if term == "-" else term
+        await _show_merchant_search_results(update, context, page=1)
         return
 
     if state != _WAIT_CHANNEL:
@@ -1029,10 +1045,102 @@ async def _show_merchants(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 callback_data=f"MERCHANT_ADM_VIEW_{merchant['telegram_id']}",
             )
         ])
+    rows.append([InlineKeyboardButton("🔍 חיפוש", callback_data="MERCHANT_ADM_SEARCH")])
     rows.append([InlineKeyboardButton("🔙 חזרה", callback_data="MERCHANT_ADM_BACK")])
 
     await update.callback_query.edit_message_text(
         f"👤 <b>רשימת סוחרים</b> ({len(merchants)})\n\nבחר סוחר לניהול:",
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+    )
+
+
+def _search_merchant_profiles(term: str) -> list[dict]:
+    needle = term.strip().lower()
+    username_term = needle.lstrip("@")
+    if not needle:
+        return []
+
+    matches: list[dict] = []
+    for merchant in list_merchant_profiles():
+        full_name = str(merchant.get("full_name") or "").lower()
+        username = str(merchant.get("username") or "").lower()
+        telegram_id = str(merchant.get("telegram_id") or "").lower()
+        display_name = str(merchant.get("display_name") or "").lower()
+        if (
+            needle in full_name
+            or needle in username
+            or needle in telegram_id
+            or needle in display_name
+            or username_term in username
+        ):
+            matches.append(merchant)
+    return matches
+
+
+async def _prompt_merchant_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_STATE] = _WAIT_SEARCH
+    context.user_data.pop(_SEARCH_TERM, None)
+    await update.callback_query.edit_message_text(
+        text="🔍 <b>חיפוש סוחרים</b>\n\nשלח שם, יוזר או מזהה טלגרם:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ ביטול", callback_data="MERCHANT_ADM_LIST")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def _show_merchant_search_results(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int = 1,
+) -> None:
+    term = (context.user_data.get(_SEARCH_TERM) or "").strip()
+    if not term:
+        return await _prompt_merchant_search(update, context)
+
+    per_page = 10
+    merchants = _search_merchant_profiles(term)
+    total = len(merchants)
+
+    if total == 0:
+        await update.callback_query.edit_message_text(
+            text=f"🔍 <b>תוצאות חיפוש</b>\n\nלא נמצאו תוצאות עבור: <b>{term}</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 חיפוש חדש", callback_data="MERCHANT_ADM_SEARCH")],
+                [InlineKeyboardButton("⬅️ חזרה לרשימת סוחרים", callback_data="MERCHANT_ADM_LIST")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = (total + per_page - 1) // per_page
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    current = merchants[start:start + per_page]
+
+    rows = []
+    for merchant in current:
+        rows.append([
+            InlineKeyboardButton(
+                f"🏪 {merchant['display_name']}",
+                callback_data=f"MERCHANT_ADM_VIEW_{merchant['telegram_id']}",
+            )
+        ])
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"MERCHANT_ADM_SEARCH_PAGE_{page - 1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"MERCHANT_ADM_SEARCH_PAGE_{page + 1}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    rows.append([InlineKeyboardButton("🔍 חיפוש חדש", callback_data="MERCHANT_ADM_SEARCH")])
+    rows.append([InlineKeyboardButton("⬅️ חזרה לרשימת סוחרים", callback_data="MERCHANT_ADM_LIST")])
+
+    await update.callback_query.edit_message_text(
+        text=f"🔍 <b>תוצאות חיפוש</b>\n<b>{term}</b>\nעמוד {page}/{total_pages} • סה״כ {total}",
         reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML",
     )
@@ -1636,6 +1744,7 @@ async def _edit_stored_message(
 
 def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(_STATE, None)
+    context.user_data.pop(_SEARCH_TERM, None)
     context.user_data.pop(_CHAT_ID, None)
     context.user_data.pop(_MSG_ID, None)
     context.user_data.pop(_REPLY_EDIT_REVIEW_ID, None)
