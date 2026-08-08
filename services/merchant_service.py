@@ -71,6 +71,7 @@ MERCHANT_CAPABILITY_LABELS: dict[str, str] = {
     "user.media.audio": "🎵 העלאת אודיו",
     "user.review.write": "⭐ הגשת חוות דעת",
     "user.review.reply": "💬 מענה לחוות דעת",
+    "user.review.link": "🔗 קישור אישי לחוות דעת",
     "user.store.view": "🛍 צפייה בחנות",
     "user.store.sell": "🛒 מכירה בחנות",
     "user.store.manage": "⚙️ ניהול חנות",

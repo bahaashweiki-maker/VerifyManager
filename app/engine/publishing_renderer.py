@@ -3577,6 +3577,36 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        if sub_action == "myrevlink":
+            if not capability_flags.get("user.review.link"):
+                await bot.send_message(
+                    chat_id,
+                    "⛔ אין לך הרשאה לקישור אישי לחוות דעת.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                    ]),
+                )
+                return
+            bot_username = await _get_bot_username(bot, context)
+            review_link = _merchant_deeplink_url(
+                bot_username,
+                _merchant_deeplink_payload(_MERCHANT_START_REVIEWS, query.from_user.id),
+            )
+            await bot.send_message(
+                chat_id,
+                (
+                    "🔗 <b>הקישור האישי שלך לחוות דעת</b>\n\n"
+                    "שתף את הקישור הבא ישירות ללקוחות, והם יגיעו לעמוד חוות הדעת שלך:\n\n"
+                    f"{review_link}"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⭐ פתח עמוד חוות דעת", url=review_link)],
+                    [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
+                ]),
+            )
+            return
+
         if sub_action == "replystart":
             review_id = int(parts[4]) if len(parts) > 4 and str(parts[4]).isdigit() else 0
             page = int(parts[5]) if len(parts) > 5 and str(parts[5]).isdigit() else 0
@@ -3652,6 +3682,8 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
         if capability_flags.get("user.review.write") or capability_flags.get("user.review.reply"):
             menu_rows.append([InlineKeyboardButton("⭐ חוות דעת", callback_data="pub:user:merchant:reviews")])
+        if capability_flags.get("user.review.link"):
+            menu_rows.append([InlineKeyboardButton("🔗 הקישור האישי שלי", callback_data="pub:user:merchant:myrevlink")])
         if capability_flags.get("user.merchant.required"):
             menu_rows.append([InlineKeyboardButton("🔐 חובת הצטרפות", callback_data="pub:user:merchant:required")])
         if capability_flags.get("user.merchant.channels"):

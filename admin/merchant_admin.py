@@ -1107,6 +1107,8 @@ def _merchant_permission_items() -> list[dict]:
             "user.review.reply",
         }:
             items.append({"key": key, "label": str(item.get("label") or key)})
+    if not any(i.get("key") == "user.review.link" for i in items):
+        items.append({"key": "user.review.link", "label": "🔗 כפתור: הקישור האישי שלי"})
     return items
 
 
