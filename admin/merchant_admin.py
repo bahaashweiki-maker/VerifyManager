@@ -13,7 +13,7 @@ Current scope:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
@@ -22,7 +22,7 @@ from telegram.ext import ContextTypes
 
 from admin.admin import admin_panel
 from config.user_permissions import USER_PERMISSIONS
-from database.database import get_connection
+from database.database import get_connection, now_il
 from repositories.merchant_channels_repository import (
     create_channel,
     deactivate_channel,
@@ -316,6 +316,32 @@ def _format_dt_full(raw: str | None) -> str:
     return text
 
 
+def _format_review_dt_full(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt_utc = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            return dt_utc.astimezone(now_il().tzinfo).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            continue
+    return text
+
+
+def _format_review_dt_short(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "-"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt_utc = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            return dt_utc.astimezone(now_il().tzinfo).strftime("%d/%m %H:%M")
+        except Exception:
+            continue
+    return text
+
+
 def _compact_review_body(review_text: str) -> str:
     raw_lines = [str(line or "").strip() for line in str(review_text or "").splitlines()]
     lines = [line for line in raw_lines if line and line != "━━━━━━━━━━━━━━" and line != "⭐ חוות דעת על השירות"]
@@ -383,7 +409,7 @@ async def _show_reviews_list(
     for review in reviews:
         review_id = int(review.get("id") or 0)
         reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
-        created_at = _format_dt_short(str(review.get("created_at") or ""))
+        created_at = _format_review_dt_short(str(review.get("created_at") or ""))
         rows.append([
             InlineKeyboardButton(
                 f"RV-{review_id} | {reviewer_name} | {created_at}",
@@ -432,11 +458,11 @@ async def _show_review_details(update: Update, context: ContextTypes.DEFAULT_TYP
     reviewer_id = int(review.get("reviewer_id") or 0)
     merchant_id = int(review.get("merchant_id") or 0)
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
-    created_at = _format_dt_full(str(review.get("created_at") or ""))
+    created_at = _format_review_dt_full(str(review.get("created_at") or ""))
     review_text = _compact_review_body(str(review.get("review_text") or "-"))
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
-    merchant_reply_dt = _format_dt_full(str(review.get("merchant_reply_updated_at") or ""))
+    merchant_reply_dt = _format_review_dt_full(str(review.get("merchant_reply_updated_at") or ""))
     merchant_name = str((_get_merchant_or_none(merchant_id) or {}).get("display_name") or merchant_id)
 
     if merchant_reply_text:
@@ -691,7 +717,7 @@ async def _show_reply_management(
 
     reply_text = str(review.get("merchant_reply_text") or "").strip()
     reply_status = str(review.get("merchant_reply_status") or "").strip()
-    reply_dt = _format_dt_full(str(review.get("merchant_reply_updated_at") or ""))
+    reply_dt = _format_review_dt_full(str(review.get("merchant_reply_updated_at") or ""))
 
     if not reply_text:
         return await update.callback_query.edit_message_text(

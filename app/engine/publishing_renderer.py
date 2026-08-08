@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     Bot,
@@ -202,7 +202,8 @@ _REVIEW_PICK_OPTIONS: dict[str, list[tuple[str, str]]] = {
         ("כן", "✅ כן"),
         ("בטח", "👍 בטח"),
         ("בהחלט", "⭐ בהחלט"),
-        ("רצי", "💡 רצי"),
+        ("לא יודע", "🤷 לא יודע"),
+        ("לא הייתי ממליץ", "👎 לא הייתי ממליץ"),
     ],
 }
 
@@ -307,7 +308,8 @@ def _format_review_datetime(raw: str | None) -> str:
         return "-"
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            return datetime.strptime(text, fmt).strftime("%d/%m/%Y %H:%M")
+            dt_utc = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            return dt_utc.astimezone(now_il().tzinfo).strftime("%d/%m/%Y %H:%M")
         except Exception:
             continue
     return text
@@ -400,6 +402,8 @@ async def _prompt_review_pick(
         [InlineKeyboardButton(label, callback_data=f"pub:user:mrev:pick:{merchant_id}:{question_key}:{idx}")]
         for idx, (_, label) in enumerate(options)
     ]
+    if question_key == "bot_experience":
+        rows.append([InlineKeyboardButton("⏭️ דלג על השאלה הזו", callback_data=f"pub:user:mrev:skipq:{merchant_id}:{question_key}")])
     rows.append([InlineKeyboardButton("❌ ביטול הגשה", callback_data=f"pub:user:mrev:cancel:{merchant_id}")])
     rows.append([InlineKeyboardButton("⬅️ חזרה לתפריט חוות דעת", callback_data=f"pub:user:mrev:menu:{merchant_id}")])
     await bot.send_message(
@@ -1184,6 +1188,8 @@ async def _notify_managers_new_review(
 
     merchant = get_merchant_profile(merchant_id) or {}
     merchant_name = str(merchant.get("display_name") or merchant_id)
+    review = get_merchant_review(review_id) or {}
+    review_dt = _format_review_datetime(review.get("created_at"))
     preview = (review_text or "").strip()
     if len(preview) > 180:
         preview = preview[:180].rstrip() + "..."
@@ -1194,7 +1200,7 @@ async def _notify_managers_new_review(
         f"🆔 פנייה: <b>RV-{review_id}</b>\n"
         f"👤 לקוח: <b>{reviewer_name or reviewer_id}</b> | <code>{reviewer_id}</code>\n"
         f"🏪 סוחר: <b>{merchant_name}</b> | <code>{merchant_id}</code>\n"
-        f"🕒 זמן: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b>\n\n"
+        f"🕒 תאריך ושעה: <b>{review_dt}</b>\n\n"
         f"📝 תצוגה מקדימה:\n{preview or '-'}"
     )
 
@@ -1232,6 +1238,8 @@ async def _notify_managers_pending_reply(
     if not recipients:
         return
 
+    review = get_merchant_review(review_id) or {}
+    reply_dt = _format_review_datetime(review.get("merchant_reply_updated_at"))
     preview = (reply_text or "").strip()
     if len(preview) > 180:
         preview = preview[:180].rstrip() + "..."
@@ -1241,7 +1249,7 @@ async def _notify_managers_pending_reply(
         "⏳ מענה סוחר ממתין לאישור מנהל\n"
         f"🆔 ביקורת: <b>RV-{review_id}</b>\n"
         f"🏪 סוחר: <b>{merchant_name}</b> | <code>{merchant_id}</code>\n"
-        f"🕒 זמן: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b>\n\n"
+        f"🕒 תאריך ושעה: <b>{reply_dt}</b>\n\n"
         f"💬 תצוגה מקדימה:\n{preview or '-'}"
     )
 
@@ -1550,14 +1558,7 @@ async def _show_public_reviews_list(
     review_text = _compact_review_body(str(review.get("review_text") or "-"))
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
-    created_raw = str(review.get("created_at") or "").strip()
-    created_at = created_raw or "-"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            created_at = datetime.strptime(created_raw, fmt).strftime("%d/%m/%Y %H:%M")
-            break
-        except Exception:
-            continue
+    created_at = _format_review_datetime(review.get("created_at"))
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
@@ -1619,14 +1620,7 @@ async def _show_my_submitted_reviews(
     merchant_reply_text = str(review.get("merchant_reply_text") or "").strip()
     merchant_reply_status = str(review.get("merchant_reply_status") or "").strip()
     status_label = {"pending": "ממתינה", "approved": "מאושרת", "rejected": "נדחתה"}.get(status, status)
-    created_raw = str(review.get("created_at") or "").strip()
-    created_at = created_raw or "-"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            created_at = datetime.strptime(created_raw, fmt).strftime("%d/%m/%Y %H:%M")
-            break
-        except Exception:
-            continue
+    created_at = _format_review_datetime(review.get("created_at"))
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
@@ -3084,6 +3078,24 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not isinstance(ratings, dict):
                 ratings = _empty_review_ratings()
             ratings[question_key] = selected_value
+            context.user_data[_MERCHANT_REVIEW_RATINGS_KEY] = ratings
+
+            next_key = _review_next_question_key(question_key)
+            if next_key:
+                await _prompt_review_pick(bot, chat_id, merchant_id, next_key)
+            else:
+                context.user_data[_MERCHANT_STATE_KEY] = _AWAIT_MERCHANT_REVIEW
+                await _prompt_review_free_text(bot, chat_id, merchant_id, ratings)
+            return
+        if sub_action == "skipq":
+            question_key = str(parts[5]) if len(parts) > 5 else ""
+            if question_key != "bot_experience":
+                await bot.send_message(chat_id, "⚠️ אי אפשר לדלג על שאלה זו.")
+                return
+            ratings = context.user_data.get(_MERCHANT_REVIEW_RATINGS_KEY)
+            if not isinstance(ratings, dict):
+                ratings = _empty_review_ratings()
+            ratings[question_key] = "-"
             context.user_data[_MERCHANT_REVIEW_RATINGS_KEY] = ratings
 
             next_key = _review_next_question_key(question_key)
