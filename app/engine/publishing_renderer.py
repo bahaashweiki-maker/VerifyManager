@@ -1687,27 +1687,25 @@ async def _show_merchant_reviews_center(
     review_id = int(review.get("id") or 0)
     reviewer_name = str(review.get("reviewer_name") or "משתמש").strip() or "משתמש"
     created_at = _format_review_datetime(review.get("created_at"))
-    review_text = str(review.get("review_text") or "-").strip() or "-"
+    review_text = _compact_review_body(str(review.get("review_text") or "-"))
     reply_text = str(review.get("merchant_reply_text") or "").strip()
     reply_status = str(review.get("merchant_reply_status") or "").strip()
 
     if reply_status == "approved" and reply_text:
-        reply_block = f"💬 תגובת הסוחר (מאושרת):\n{reply_text}"
+        reply_block = f"💬 תגובת הסוחר: {reply_text}"
     elif reply_text:
-        reply_block = (
-            f"💬 תגובת הסוחר: <b>{_merchant_reply_status_label(reply_status)}</b>\n"
-            f"{reply_text}"
-        )
+        reply_block = f"💬 תגובת הסוחר: <b>{_merchant_reply_status_label(reply_status)}</b> | {reply_text}"
     else:
         reply_block = "💬 תגובת הסוחר: <b>טרם נשלחה</b>"
+
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    kb_rows.append([InlineKeyboardButton("⬅️ חזרה לאזור אישי", callback_data="pub:user:merchant")])
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"pub:user:merchant:reviewspg:{page - 1}"))
     if page < count - 1:
         nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"pub:user:merchant:reviewspg:{page + 1}"))
-
-    kb_rows: list[list[InlineKeyboardButton]] = []
     if nav_row:
         kb_rows.append(nav_row)
 
@@ -1717,17 +1715,17 @@ async def _show_merchant_reviews_center(
         kb_rows.append([
             InlineKeyboardButton(action_label, callback_data=f"pub:user:merchant:replystart:{review_id}:{page}")
         ])
-
-    kb_rows.append([InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")])
+    if capability_flags.get("user.review.link"):
+        kb_rows.append([InlineKeyboardButton("🔗 הקישור האישי שלי", callback_data="pub:user:merchant:myrevlink")])
 
     await bot.send_message(
         chat_id,
         (
-            "⭐ <b>חוות הדעת על הסוחר</b>\n\n"
+            "⭐ <b>חוות הדעת על הסוחר</b>\n"
             f"🧾 ביקורת <b>{page + 1}</b> מתוך <b>{count}</b>\n"
             f"👤 מגיש: <b>{reviewer_name}</b>\n"
-            f"🕒 תאריך ושעה: <b>{created_at}</b>\n\n"
-            f"📝 ביקורת:\n{review_text}\n\n"
+            f"🕒 תאריך ושעה: <b>{created_at}</b>\n"
+            f"{review_text}\n"
             f"{reply_block}"
         ),
         parse_mode="HTML",
@@ -3231,7 +3229,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if sub_action == "schedule" and not _merchant_feature_allowed(capability_flags, "user.merchant.schedule"):
-            await bot.send_message(chat_id, "⛔ אין לך הרשאה: תזמון פרסום.")
+            await bot.send_message(chat_id, "⛔ אין לך הרשאה: ניהול פרסום.")
             return
 
         if sub_action == "required":
@@ -3714,7 +3712,7 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not capability_flags.get("user.merchant.schedule"):
                 await bot.send_message(
                     chat_id,
-                    "⛔ אין לך הרשאת תזמון פרסום בפאנל הסוחר.",
+                    "⛔ אין לך הרשאת ניהול פרסום בפאנל הסוחר.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⬅️ חזרה לאזור סוחר", callback_data="pub:user:merchant")],
                     ]),
@@ -3731,9 +3729,9 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await bot.send_message(
                 chat_id,
                 (
-                    "⏱️ <b>תזמון פרסום</b>\n\n"
+                    "📣 <b>ניהול פרסום</b>\n\n"
                     "כאן אפשר לבדוק אם הפרסום השעתי פעיל ומה צריך לעשות כדי להפעיל או לעצור אותו.\n\n"
-                    f"הרשאת תזמון: <b>פעילה</b>\n"
+                    f"הרשאת ניהול פרסום: <b>פעילה</b>\n"
                     f"מצב כל שעה: <b>{'פעיל' if is_hourly else 'כבוי'}</b>\n\n"
                     "כדי להפעיל פרסום כל שעה, היכנס למסך יצירת הפרסום ולחץ 'הפעל אוטומטי כל שעה'.\n"
                     "כדי לעצור טיימר פעיל: הפרסומים שלי -> פתח פרסום -> עצור שעתי."
@@ -3851,22 +3849,14 @@ async def handle_user_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         merchant_name = str((merchant_profile or {}).get("display_name") or query.from_user.full_name or query.from_user.username or "סוחר").strip()
 
         menu_rows = []
-        if capability_flags.get("user.merchant.start") and can_start_publication and not missing_required:
-            menu_rows.append([InlineKeyboardButton("▶️ התחל פרסום", callback_data="pub:user:merchant:start")])
-        if capability_flags.get("user.publish.multi") and not missing_required:
-            menu_rows.append([InlineKeyboardButton("🧩 פרסום נוסף (מרובה)", callback_data="pub:user:merchant:newpub")])
         if capability_flags.get("user.merchant.schedule") and not missing_required:
-            menu_rows.append([InlineKeyboardButton("⏱️ תזמון פרסום", callback_data="pub:user:merchant:schedule")])
+            menu_rows.append([InlineKeyboardButton("📣 ניהול פרסום", callback_data="pub:user:merchant:schedule")])
         if capability_flags.get("user.review.write") or capability_flags.get("user.review.reply"):
             menu_rows.append([InlineKeyboardButton("⭐ חוות דעת", callback_data="pub:user:merchant:reviews")])
-        if capability_flags.get("user.review.link"):
-            menu_rows.append([InlineKeyboardButton("🔗 הקישור האישי שלי", callback_data="pub:user:merchant:myrevlink")])
         if capability_flags.get("user.merchant.required"):
             menu_rows.append([InlineKeyboardButton("🔐 חובת הצטרפות", callback_data="pub:user:merchant:required")])
         if capability_flags.get("user.merchant.channels"):
             menu_rows.append([InlineKeyboardButton("📡 הערוצים שלי", callback_data="pub:user:merchant:channels")])
-        if capability_flags.get("user.merchant.publications"):
-            menu_rows.append([InlineKeyboardButton("🗂️ הפרסומים שלי", callback_data="pub:user:merchant:mypubs")])
         if capability_flags.get("user.merchant.status"):
             menu_rows.append([InlineKeyboardButton("🛡️ סטטוס הרשאות", callback_data="pub:user:merchant:status")])
         menu_rows.append([InlineKeyboardButton("⬅️ חזרה לבית", callback_data="pub:user:home")])
